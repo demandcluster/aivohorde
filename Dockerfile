@@ -10,4 +10,4 @@ RUN pip install -r requirements.txt
 COPY . .
 # 
 # python3 server.py --allow_all_ips -i -v --horde kobold
-CMD [ "python3", "server.py", "--allow_all_ips", "-i", "-v", "--horde", "stable","--quorum"]
+CMD [ "python3", "server.py", "--allow_all_ips", "-v", "--horde", "stable","--quorum"]
