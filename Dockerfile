@@ -5,9 +5,9 @@ FROM python:3.8-slim-buster
 WORKDIR /app
 
 COPY requirements.txt requirements.txt
-RUN apt-get update && apt-get install -y git redis-server
+RUN apt-get update && apt-get install -y git red
 RUN pip install -r requirements.txt
 COPY . .
 # 
 # python3 server.py --allow_all_ips -i -v --horde kobold
-CMD [ "python3", "server.py", "--horde", "stable"]
+CMD [ "python3", "server.py", "--allow_all_ips", "-i", "-v", "--horde", "stable"]
