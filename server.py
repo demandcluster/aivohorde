@@ -20,7 +20,7 @@ if __name__ == "__main__":
     if args.insecure:
         os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'  # Disable this on prod
         url_scheme = 'http'
-    allowed_host = "0.0.0.0" #"stablehorde.net"
+    allowed_host = "horde.aivo.chat" #"stablehorde.net"
     if args.insecure:
         allowed_host = "0.0.0.0"
         logger.init_warn("WSGI Mode", status="Insecure")
