@@ -41,15 +41,15 @@ def get_quorum():
         return None
     quorum = hr.horde_r.get('horde_quorum')
     if not quorum:
-        hr.horde_r.setex('horde_quorum', timedelta(seconds=2), horde_instance_id)
+        hr.horde_r_setex('horde_quorum', timedelta(seconds=2), horde_instance_id)
         logger.critical(f"Quorum changed to port {args.port} with ID {horde_instance_id}")
         # We return None which will make other threads sleep one iteration to ensure no other node raced us to the quorum
         return None
     if quorum == horde_instance_id:
-        hr.horde_r.setex('horde_quorum', timedelta(seconds=2), horde_instance_id)
+        hr.horde_r_setex('horde_quorum', timedelta(seconds=2), horde_instance_id)
         logger.trace(f"Quorum retained in port {args.port} with ID {horde_instance_id}")
     elif args.quorum:
-        hr.horde_r.setex('horde_quorum', timedelta(seconds=2), horde_instance_id)
+        hr.horde_r_setex('horde_quorum', timedelta(seconds=2), horde_instance_id)
         logger.debug(f"Forcing Pickingh Quorum n port {args.port} with ID {horde_instance_id}")
     return(quorum)
 
@@ -97,7 +97,7 @@ def store_prioritized_wp_queue():
 
 @logger.catch(reraise=True)
 def store_worker_list():
-    '''Stores the retrieved worker details as json for 30 seconds horde-wide'''
+    '''Stores the retrieved worker details as json for 300 seconds horde-wide'''
     with HORDE.app_context():
         serialized_workers = []
         serialized_workers_privileged = []
@@ -248,7 +248,7 @@ def store_available_models():
     with HORDE.app_context():
         json_models = json.dumps(get_available_models())
         try:
-            hr.horde_r_setex('models_cache', timedelta(seconds=240), json_models)
+            hr.horde_r_setex('models_cache', timedelta(seconds=600), json_models)
         except (TypeError, OverflowError) as err:
             logger.error(f"Failed serializing workers with error: {err}")
 
@@ -311,6 +311,8 @@ def store_patreon_members():
         user_id = int(user_id)
         if "alias" in note:
             member_dict["alias"] = note["alias"]
+        if "sponsor_link" in note:
+            member_dict["sponsor_link"] = note["sponsor_link"]
         active_members[user_id] = member_dict
     cached_patreons = json.dumps(active_members)
     hr.horde_r_set('patreon_cache', cached_patreons)

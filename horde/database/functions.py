@@ -16,7 +16,7 @@ from horde import vars as hv
 from horde.classes.base.worker import WorkerPerformance
 from horde.classes.stable.worker import ImageWorker
 from horde.classes.kobold.worker import TextWorker
-from horde.classes.base.user import User
+from horde.classes.base.user import User, UserRecords, UserSharedKey, KudosTransferLog
 from horde.classes.stable.waiting_prompt import ImageWaitingPrompt
 from horde.classes.stable.processing_generation import ImageProcessingGeneration
 from horde.classes.kobold.waiting_prompt import TextWaitingPrompt
@@ -28,13 +28,12 @@ from horde.classes.base.detection import Filter
 from horde.classes.stable.interrogation_worker import InterrogationWorker
 from horde.utils import hash_api_key, validate_regex
 from horde import horde_redis as hr
-from horde.database.classes import FakeWPRow, PrimaryTimedFunction
+from horde.database.classes import FakeWPRow
 from horde.enums import State
 from horde.bridge_reference import check_bridge_capability, check_sampler_capability
 
 from horde.classes.base.team import find_team_by_id, find_team_by_name, get_all_teams
 from horde.model_reference import model_reference
-from horde.classes.base.settings import HordeSettings
 
 ALLOW_ANONYMOUS = True
 WORKER_CLASS_MAP = {
@@ -58,17 +57,21 @@ def shutdown(seconds):
         time.sleep(seconds)
 
 def get_top_contributor():
-    top_contribution = 0
     top_contributor = None
-    #TODO Exclude anon
-    top_contributor = db.session.query(User).order_by(
-        User.contributed_thing.desc()
+    top_contributor = db.session.query(
+        User
+    ).join(
+        UserRecords
+    ).filter(
+        UserRecords.record_type == 'CONTRIBUTION',
+        UserRecords.record == 'image',
+    ).order_by(
+        UserRecords.value.desc()
     ).first()
     return top_contributor
 
 def get_top_worker():
     top_worker = None
-    top_worker_contribution = 0
     top_worker = db.session.query(ImageWorker).order_by(
         ImageWorker.contributions.desc()
     ).first()
@@ -172,6 +175,37 @@ def find_user_by_api_key(api_key):
     user = db.session.query(User).filter_by(api_key=hash_api_key(api_key)).first()
     return user
 
+def find_user_by_sharedkey(shared_key):
+    try:
+        sharedkey_uuid = uuid.UUID(shared_key)
+    except ValueError as e: 
+        logger.debug(f"Non-UUID sharedkey_id sent: '{shared_key}'.")
+        return None        
+    if SQLITE_MODE:
+        sharedkey_uuid = str(sharedkey_uuid)
+    user = db.session.query(
+        User
+    ).join(
+        UserSharedKey
+    ).filter(
+        UserSharedKey.id == shared_key
+    ).first()
+    return user
+
+def find_sharedkey(shared_key):
+    try:
+        sharedkey_uuid = uuid.UUID(shared_key)
+    except ValueError as e: 
+        return None        
+    if SQLITE_MODE:
+        sharedkey_uuid = str(sharedkey_uuid)
+    sharedkey = db.session.query(
+        UserSharedKey
+    ).filter(
+        UserSharedKey.id == shared_key
+    ).first()
+    return sharedkey
+
 def find_worker_by_name(worker_name, worker_class=ImageWorker):
     worker = db.session.query(worker_class).filter_by(name=worker_name).first()
     return worker
@@ -237,8 +271,9 @@ def get_available_models():
             models_dict[model_name]["type"] = model_type
 
             models_dict[model_name]['queued'] = 0
+            models_dict[model_name]['jobs'] = 0
             models_dict[model_name]['eta'] = 0
-            models_dict[model_name]['performance'] = stats.get_model_avg(model_name) #TODO: Currently returns 1000000
+            models_dict[model_name]['performance'] = stats.get_model_avg(model_name)
             models_dict[model_name]['workers'] = []
 
         # We don't want to report on any random model name a client might request
@@ -258,11 +293,12 @@ def get_available_models():
             models_dict[model_name]["name"] = model_name
             models_dict[model_name]["count"] = 0
             models_dict[model_name]['queued'] = 0
+            models_dict[model_name]['jobs'] = 0
             models_dict[model_name]["type"] = model_type
             models_dict[model_name]['eta'] = 0
-            models_dict[model_name]['performance'] = stats.get_model_avg(model_name) #TODO: Currently returns 1000000
+            models_dict[model_name]['performance'] = stats.get_model_avg(model_name)
             models_dict[model_name]['workers'] = []
-        things_per_model = count_things_per_model(wp_class)
+        things_per_model, jobs_per_model = count_things_per_model(wp_class)
         # If we request a lite_dict, we only want worker count per model and a dict format
         for model_name in things_per_model:
             # This shouldn't happen, but I'm checking anyway
@@ -270,6 +306,7 @@ def get_available_models():
                 # logger.debug(f"Tried to match non-existent wp model {model_name} to worker models. Skipping.")
                 continue
             models_dict[model_name]['queued'] = things_per_model[model_name]
+            models_dict[model_name]['jobs'] = jobs_per_model[model_name]
             total_performance_on_model = models_dict[model_name]['count'] * models_dict[model_name]['performance']
             # We don't want a division by zero when there's no workers for this model.
             if total_performance_on_model > 0:
@@ -299,6 +336,9 @@ def retrieve_available_models(model_type=None,min_count=None,max_count=None):
     return models_ret
 
 def transfer_kudos(source_user, dest_user, amount):
+    reverse_transfer = hr.horde_r_get(f'kudos_transfer_{dest_user.id}-{source_user.id}')
+    if reverse_transfer:
+        return([0,'This user transferred kudos to you very recently. Please wait at least 1 minute.'])
     if source_user.is_suspicious():
         return([0,'Something went wrong when sending kudos. Please contact the mods.'])
     if source_user.flagged:
@@ -311,6 +351,14 @@ def transfer_kudos(source_user, dest_user, amount):
         return([0,'Nice try...'])
     if amount > source_user.kudos - source_user.get_min_kudos():
         return([0,'Not enough kudos.'])
+    hr.horde_r_setex(f'kudos_transfer_{source_user.id}-{dest_user.id}', timedelta(seconds=60), 1)
+    transfer_log = KudosTransferLog(
+        source_id = source_user.id,
+        dest_id = dest_user.id,
+        kudos = amount,
+    )
+    db.session.add(transfer_log)
+    db.session.commit()
     source_user.modify_kudos(-amount, 'gifted')
     dest_user.modify_kudos(amount, 'received')
     logger.info(f"{source_user.get_unique_alias()} transfered {amount} kudos to {dest_user.get_unique_alias()}")
@@ -428,7 +476,8 @@ def count_totals():
         )
     ).filter(
         ImageWaitingPrompt.n > 0,
-        ImageWaitingPrompt.faulted == False
+        ImageWaitingPrompt.faulted == False,
+        ImageWaitingPrompt.active == True,
     ).group_by(
         ImageWaitingPrompt.id
     ).subquery('all_image_wp_counts')
@@ -450,7 +499,8 @@ def count_totals():
         )
     ).filter(
         TextWaitingPrompt.n > 0,
-        TextWaitingPrompt.faulted == False
+        TextWaitingPrompt.faulted == False,
+        TextWaitingPrompt.active == True,
     ).group_by(
         TextWaitingPrompt.id
     ).subquery('all_text_wp_counts')
@@ -493,6 +543,7 @@ def get_organized_wps_by_model(wp_class):
     all_wps = db.session.query(
         wp_class
     ).filter(
+        wp_class.active == True,
         wp_class.faulted == False,
         wp_class.n >= 1,
     ).all() # TODO this can likely be improved
@@ -508,19 +559,20 @@ def get_organized_wps_by_model(wp_class):
 
 def count_things_per_model(wp_class):
     things_per_model = {}
+    jobs_per_model = {}
     org = get_organized_wps_by_model(wp_class)
     for model in org:
         for wp in org[model]:
             current_wp_queue = wp.n + wp.count_processing_gens()["processing"]
             if current_wp_queue > 0:
                 things_per_model[model] = things_per_model.get(model,0) + wp.things
+                jobs_per_model[model] = jobs_per_model.get(model,0) + current_wp_queue
         things_per_model[model] = round(things_per_model.get(model,0),2)
-    return(things_per_model)
+    return things_per_model,jobs_per_model
 
 
 def get_sorted_wp_filtered_to_worker(worker, models_list = None, blacklist = None, priority_user_ids=None): 
     # This is just the top 100 - Adjusted method to send ImageWorker object. Filters to add.
-    # TODO: Ensure the procgen table is NOT retrieved along with WPs (because it contains images)
     # TODO: Filter by (ImageWorker in WP.workers) __ONLY IF__ len(WP.workers) >=1 
     # TODO: Filter by WP.trusted_workers == False __ONLY IF__ ImageWorker.user.trusted == False
     # TODO: Filter by ImageWorker not in WP.tricked_worker
@@ -578,7 +630,7 @@ def get_sorted_wp_filtered_to_worker(worker, models_list = None, blacklist = Non
             ),
         ),
         or_(
-            worker.speed >= 300000, # 0.3 MPS/s
+            worker.speed >= 500000, # 0.5 MPS/s
             ImageWaitingPrompt.slow_workers == True,
         ),
     )
@@ -604,6 +656,7 @@ def get_sorted_forms_filtered_to_worker(worker, forms_list = None, priority_user
         InterrogationForms.name.in_(forms_list),
         InterrogationForms.expiry == None,
         Interrogation.source_image != None,
+        Interrogation.image_tiles <= worker.max_power,
         or_(
             Interrogation.safe_ip == True,
             and_(
@@ -617,6 +670,10 @@ def get_sorted_forms_filtered_to_worker(worker, forms_list = None, priority_user
                 worker.maintenance == True,
                 Interrogation.user_id == worker.user_id,
             ),
+        ),
+        or_(
+            worker.speed < 10, # 10 seconds per form
+            Interrogation.slow_workers == True,
         ),
     ).order_by(
         Interrogation.extra_priority.desc(), 
@@ -635,7 +692,6 @@ def get_sorted_forms_filtered_to_worker(worker, forms_list = None, priority_user
             retrieve_limit = 1
         final_interrogation_query.filter(InterrogationForms.id.not_in(excluded_form_ids))
     final_interrogation_list = final_interrogation_query.limit(retrieve_limit).all()
-    # logger.debug(final_interrogation_query)
     return final_interrogation_list
 
 # Returns the queue position of the provided WP based on kudos
@@ -757,18 +813,111 @@ def get_request_avg(request_type = "image"):
     perf_cache = float(perf_cache)
     return perf_cache
 
-def wp_has_valid_workers(wp, limited_workers_ids = None):
-    if not limited_workers_ids: limited_workers_ids = []
-    # FIXME: Too heavy
-    # TODO: Redis cached
-    return True
+def wp_has_valid_workers(wp):
+    # return True # FIXME: Still too heavy on the amount of data retrieved
+    cached_validity = hr.horde_r_get(f'wp_validity_{wp.id}')
+    if cached_validity is not None:
+        return bool(int(cached_validity))
+    # tic = time.time()
+    if wp.faulted:
+        return []
+    if wp.expiry < datetime.utcnow():
+        return []
+    worker_class = ImageWorker
+    if wp.wp_type == "text":
+        worker_class = TextWorker
+    elif wp.wp_type == "interrogation":
+        worker_class = InterrogationWorker
+    models_list = wp.get_model_names()
+    worker_ids = wp.get_worker_ids()
+    final_worker_list = db.session.query(
+        worker_class
+    ).options(
+        noload(worker_class.performance),
+        noload(worker_class.suspicions),
+        noload(worker_class.stats),
+    ).outerjoin(
+        WorkerModel,
+    ).join(
+        User,
+    ).filter(
+        worker_class.last_check_in > datetime.utcnow() - timedelta(seconds=300),
+        or_(
+            len(worker_ids) == 0,
+            worker_class.id.in_(worker_ids),
+        ),
+        or_(
+            len(models_list) == 0,
+            WorkerModel.model.in_(models_list),
+        ),
+        or_(
+            wp.trusted_workers == False,
+            and_(
+                wp.trusted_workers == True,
+                User.trusted == True,
+            ),
+        ),
+        or_(
+            wp.safe_ip == True,
+            and_(
+                wp.safe_ip == False,
+                worker_class.allow_unsafe_ipaddr == True,
+            ),
+        ),
+        or_(
+            wp.nsfw == False,
+            and_(
+                wp.nsfw == True,
+                worker_class.nsfw == True,
+            ),
+        ),
+        or_(
+            worker_class.maintenance == False,
+            and_(
+                worker_class.maintenance == True,
+                wp.user_id == worker_class.user_id,
+            ),
+        ),
+        or_(
+            worker_class.paused == False,
+            and_(
+                worker_class.paused == True,
+                wp.user_id == worker_class.user_id,
+            ),
+        ),
+    )
+    if wp.wp_type == "image":
+        final_worker_list = final_worker_list.filter(
+            wp.width * wp.height <= worker_class.max_pixels,
+            or_(
+                wp.source_image == None,
+                and_(
+                    wp.source_image != None,
+                    worker_class.allow_img2img == True,
+                ),
+            ),
+            or_(
+                wp.slow_workers == True,
+                worker_class.speed >= 500000,
+            ),
+        )
+    elif wp.wp_type == "text":
+        final_worker_list = final_worker_list.filter(
+            wp.max_length <= worker_class.max_length,
+            wp.max_context_length <= worker_class.max_context_length,
+            or_(
+                wp.slow_workers == True,
+                worker_class.speed >= 2,
+            ),
+        )
+    elif wp.wp_type == "interrogation":
+        pass # FIXME: Add interrogation filters
     worker_found = False
-    for worker in get_active_workers():
-        if len(limited_workers_ids) and worker not in wp.get_worker_ids():
-            continue
+    for worker in final_worker_list.all():
         if worker.can_generate(wp)[0]:
             worker_found = True
-            break
+    # logger.debug(time.time() - tic)
+    hr.horde_r_setex(f'wp_validity_{wp.id}', timedelta(seconds=60), int(worker_found))
     return worker_found
 
 @logger.catch(reraise=True)
@@ -842,3 +991,16 @@ def retrieve_regex_replacements(filter_type):
         if validate_regex(filter.regex)
     ]
     return all_filter_regex_dict
+
+def get_all_users(sort="kudos", offset=0):
+    if sort == "age":
+        user_order_by = User.created.asc()
+    else:
+        user_order_by = User.kudos.desc()
+    return db.session.query(
+        User
+    ).order_by(
+        user_order_by
+    ).offset(
+        offset
+    ).limit(25).all()

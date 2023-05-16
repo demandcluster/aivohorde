@@ -1,18 +1,21 @@
 import uuid
+import json
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from sqlalchemy.ext.mutable import MutableDict
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy import JSON, func, or_
+from sqlalchemy.sql import expression
 
 from horde.logger import logger
 from horde.flask import db, SQLITE_MODE
 from horde import vars as hv
-from horde.utils import is_profane, get_db_uuid, get_expiry_date, get_db_uuid
+from horde.utils import is_profane, get_db_uuid, get_expiry_date
 
 from horde.classes.base.processing_generation import ProcessingGeneration
 from horde.classes.stable.processing_generation import ImageProcessingGeneration
 from horde.classes.kobold.processing_generation import TextProcessingGeneration
+from horde import horde_redis as hr
 
 procgen_classes = {
     "template": ProcessingGeneration,
@@ -70,9 +73,11 @@ class WaitingPrompt(db.Model):
     safe_ip = db.Column(db.Boolean, default=False, nullable=False)
     trusted_workers = db.Column(db.Boolean, default=False, nullable=False, index=True)
     slow_workers = db.Column(db.Boolean, default=True, nullable=False, index=True)
+    worker_blacklist = db.Column(db.Boolean, default=False, nullable=False, index=True)
     faulted = db.Column(db.Boolean, default=False, nullable=False, index=True)
     active = db.Column(db.Boolean, default=False, nullable=False, index=True)
     consumed_kudos = db.Column(db.Integer, default=0, nullable=False)
+    kudos = db.Column(db.Float, default=0, nullable=False, server_default=expression.literal(0))
     # The amount of jobs still to do
     n = db.Column(db.Integer, default=0, nullable=False, index=True)
     # This stores the original amount of jobs requested
@@ -82,6 +87,8 @@ class WaitingPrompt(db.Model):
     extra_priority = db.Column(db.Integer, default=0, nullable=False, index=True)
     job_ttl = db.Column(db.Integer, default=150, nullable=False)
     client_agent = db.Column(db.Text, default="unknown:0:unknown", nullable=False)
+    sharedkey_id = db.Column(uuid_column_type(), db.ForeignKey("user_sharedkeys.id", ondelete="CASCADE"), nullable=True)
+    sharedkey = db.relationship("UserSharedKey", back_populates="waiting_prompts")
 
     tricked_workers = db.relationship("WPTrickedWorkers", back_populates="wp", passive_deletes=True, cascade="all, delete-orphan")
     workers = db.relationship("WPAllowedWorkers", back_populates="wp", passive_deletes=True, cascade="all, delete-orphan")
@@ -100,7 +107,11 @@ class WaitingPrompt(db.Model):
         self.extract_params()
 
     def set_workers(self, worker_ids = None):
-        if not worker_ids: worker_ids = []
+        if not worker_ids: 
+            worker_ids = []
+        else:
+            # We only allow whitelisting up to 5 worker IDs
+            worker_ids = worker_ids[0:5]
         # We don't allow more workers to claim they can server more than 50 models atm (to prevent abuse)
         for wid in worker_ids:
             worker_entry = WPAllowedWorkers(worker_id=wid,wp_id=self.id)
@@ -108,8 +119,7 @@ class WaitingPrompt(db.Model):
 
     def set_models(self, model_names = None):
         if not model_names: model_names = []
-        # We don't allow more workers to claim they can server more than 50 models atm (to prevent abuse)
-        logger.debug(model_names)
+        # logger.debug(model_names)
         for model in model_names:
             model_entry = WPModels(model=model,wp_id=self.id)
             db.session.add(model_entry)
@@ -123,10 +133,20 @@ class WaitingPrompt(db.Model):
             self.extra_priority = round(self.user.kudos / 100) 
         else:    
             self.extra_priority = self.user.kudos
+        # This is an extra cost for the operation as a whole, to represent the infrastructure costs
+        # and rewarding requests which bundle multiple jobs into the same payload
+        # Instead of splitting them into multiples.
+        horde_tax = 1
+        self.record_usage(
+            raw_things = 0, 
+            kudos = horde_tax, 
+            usage_type = self.wp_type, 
+            avoid_burn = True
+        )
+        # logger.debug(f"wp {self.id} initiated and paying horde tax: {horde_tax}")
         db.session.commit()
 
     def get_model_names(self):
-        # Could also do this based on self.models, but no need
         return [m.model for m in self.models]
 
     # These are typically horde-specific so they will be defined in the specific class for this horde type
@@ -289,15 +309,35 @@ class WaitingPrompt(db.Model):
         ret_dict = self.get_status(lite=True, **kwargs)
         return(ret_dict)
 
-    def record_usage(self, raw_things, kudos, usage_type):
+    # This should be overriden by each extending class
+    def calculate_kudos(self):
+        '''Returns the expected kudos a worker will receive for this request'''
+        # Dummy ammount
+        return 10
+
+    def calculate_extra_kudos_burn(self, kudos):
+        '''Extend this function to add extra kudos burn for the particular use
+        Which represents the cost of each job to the horde infrastructure
+        '''
+        return kudos
+
+    def record_usage(self, raw_things, kudos, usage_type, avoid_burn = False):
         '''Record that we received a requested generation and how much kudos it costs us
         We use 'thing' here as we do not care what type of thing we're recording at this point
         This avoids me having to extend this just to change a var name
         '''
+        if not avoid_burn:
+            kudos = self.calculate_extra_kudos_burn(kudos)
+        if self.sharedkey_id is not None:
+            self.sharedkey.consume_kudos(kudos)
         self.user.record_usage(raw_things, kudos, usage_type)
         self.consumed_kudos = round(self.consumed_kudos + kudos,2)
         self.refresh()
 
+    def extrapolate_dry_run_kudos(self):
+        kudos = self.calculate_kudos()
+        return self.calculate_extra_kudos_burn(kudos) * self.n
+    
     def log_faulted_prompt(self):
         '''Extendable function to log why a request was aborted'''
         logger.warning(f"Faulting waiting prompt {self.id} with payload '{self.gen_payload}' due to too many faulted jobs")
@@ -341,6 +381,27 @@ class WaitingPrompt(db.Model):
         '''
         self.job_ttl = 150
         db.session.commit()
-    
+
+    def refresh_worker_cache(self):
+        worker_ids = [worker.worker_id for worker in self.workers]
+        worker_string_ids = [str(worker.worker_id) for worker in self.workers]
+        try:
+            hr.horde_r_setex(f'wp_{self.id}_worker_cache', timedelta(minutes=20), json.dumps(worker_string_ids))
+        except Exception as err:
+            logger.debug(f"Error when trying to set workers cache: {err}. Retrieving from DB.")
+        return worker_ids
+
     def get_worker_ids(self):
-        return [worker.id for worker in self.workers]
+        if hr.horde_r is None:
+            return [worker.worker_id for worker in self.workers]
+        worker_cache = hr.horde_r_get(f'wp_{self.id}_worker_cache')
+        if not worker_cache:
+            return self.refresh_worker_cache()
+        try:
+            worker_cache = json.loads(worker_cache)
+        except TypeError as e:
+            logger.error(f"Worker cache could not be loaded: {worker_cache}")
+            return self.refresh_worker_cache()
+        if worker_cache is None:
+            return self.refresh_worker_cache()
+        return [uuid.UUID(wid) for wid in worker_cache]

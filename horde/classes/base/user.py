@@ -3,16 +3,21 @@ import os
 
 import dateutil.relativedelta
 from datetime import datetime
-from sqlalchemy import Enum
+from sqlalchemy import Enum, UniqueConstraint
+from sqlalchemy.ext.hybrid import hybrid_property
+from sqlalchemy.dialects.postgresql import UUID
 
 from horde.logger import logger
-from horde.flask import db
+from horde.flask import db, SQLITE_MODE
 from horde.vars import thing_name, text_thing_divisor, text_thing_name
 from horde import vars as hv
 from horde.suspicions import Suspicions, SUSPICION_LOGS
 from horde.utils import is_profane, sanitize_string, generate_client_id
 from horde.patreon import patrons
-from horde.enums import UserRecordTypes
+from horde.enums import UserRecordTypes, UserRoleTypes
+from horde.utils import get_db_uuid
+
+uuid_column_type = lambda: UUID(as_uuid=True) if not SQLITE_MODE else db.String(36)
 
 
 class UserStats(db.Model):
@@ -35,7 +40,7 @@ class UserSuspicions(db.Model):
 
 class UserRecords(db.Model):
     __tablename__ = "user_records"
-    # __table_args__ = (UniqueConstraint('user_id', 'record_type', 'record', name='user_records_user_id_record_type_record_key'),)
+    __table_args__ = (UniqueConstraint('user_id', 'record_type', 'record', name='user_records_user_id_record_type_record_key'),)
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     user = db.relationship("User", back_populates="records")
@@ -44,13 +49,74 @@ class UserRecords(db.Model):
     record = db.Column(db.String(30), nullable=False)
     value = db.Column(db.Float, default=0, nullable=False)
 
+class UserRole(db.Model):
+    __tablename__ = "user_roles"
+    __table_args__ = (UniqueConstraint('user_id', 'user_role', name='user_id_role'),)
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    user = db.relationship("User", back_populates="roles")
+    user_role = db.Column(Enum(UserRoleTypes), nullable=False)
+    value = db.Column(db.Boolean, default=False, nullable=False)
+
+class KudosTransferLog(db.Model):
+    __tablename__ = "kudos_transfers"
+    # Decided to add one row per
+    # __table_args__ = (UniqueConstraint('source_id', 'dest_id', name='source_dest'),)
+    id = db.Column(db.Integer, primary_key=True)
+    source_id = db.Column(db.Integer, db.ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    dest_id = db.Column(db.Integer, db.ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    kudos = db.Column(db.BigInteger, default=0, nullable=False)
+    created = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+
+class UserSharedKey(db.Model):
+    __tablename__ = "user_sharedkeys"
+    id = db.Column(uuid_column_type(), primary_key=True, default=get_db_uuid)
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    user = db.relationship("User", back_populates="sharedkeys")
+    kudos = db.Column(db.BigInteger, default=5000, nullable=False)
+    created = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    expiry = db.Column(db.DateTime, index=True)
+    name = db.Column(db.String(255), nullable=True)
+    utilized = db.Column(db.BigInteger, default=0, nullable=False)
+    waiting_prompts = db.relationship("WaitingPrompt", back_populates="sharedkey", passive_deletes=True, cascade="all, delete-orphan")
+
+    @logger.catch(reraise=True)
+    def get_details(self):
+        ret_dict = {
+            "username": self.user.get_unique_alias(),
+            "id": self.id,
+            "kudos": self.kudos,
+            "expiry": self.expiry,
+            "utilized": self.utilized,
+        }
+        return ret_dict
+
+    def consume_kudos(self, kudos):
+        if self.kudos == 0:
+            return
+        if self.kudos != -1:      
+            self.kudos = round(self.kudos - kudos, 2)
+            if self.kudos < 0:
+                self.kudos = 0
+        self.utilized = round(self.utilized + kudos, 2)
+        logger.debug(f"Utilized {kudos} from shared key {self.id}. {self.kudos} remaining.")
+        db.session.commit()
+
+    def is_valid(self):
+        if self.kudos == 0:
+            return False,"This shared key has run out of kudos."
+        if self.expiry is not None and self.expiry < datetime.utcnow():
+            return False,"This shared key has expired"
+        else:
+            return True, None
+
 class User(db.Model):
     __tablename__ = "users"
     SUSPICION_THRESHOLD = 5
     SAME_IP_WORKER_THRESHOLD = 3
+    SAME_IP_TRUSTED_WORKER_THRESHOLD = 20
 
     id = db.Column(db.Integer, primary_key=True) 
-    # id = db.Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)  # Then move to this
     username = db.Column(db.String(50), unique=False, nullable=False)
     oauth_id = db.Column(db.String(50), unique=True, nullable=False, index=True)
     api_key = db.Column(db.String(100), unique=True, nullable=False, index=True)
@@ -64,34 +130,139 @@ class User(db.Model):
     monthly_kudos_last_received = db.Column(db.DateTime, default=None)
     evaluating_kudos = db.Column(db.Integer, default=0, nullable=False)
     usage_multiplier = db.Column(db.Float, default=1.0, nullable=False)
-    #TODO: Delete next 4 columns once UserRecords populated
-    contributed_thing = db.Column(db.Float, default=0, nullable=False, index=True)
-    contributed_fulfillments = db.Column(db.Integer, default=0, nullable=False)
-    usage_thing = db.Column(db.Float, default=0, nullable=False)
-    usage_requests = db.Column(db.Integer, default=0, nullable=False)
 
     worker_invited = db.Column(db.Integer, default=0, nullable=False)
-    moderator = db.Column(db.Boolean, default=False, nullable=False)
     public_workers = db.Column(db.Boolean, default=False, nullable=False)
-    trusted = db.Column(db.Boolean, default=False, nullable=False)
-    flagged = db.Column(db.Boolean, default=False, nullable=False)
     concurrency = db.Column(db.Integer, default=30, nullable=False)
 
     workers = db.relationship(f"Worker", back_populates="user", cascade="all, delete-orphan")
     teams = db.relationship(f"Team", back_populates="owner", cascade="all, delete-orphan")
+    sharedkeys = db.relationship(f"UserSharedKey", back_populates="user", cascade="all, delete-orphan")
     suspicions = db.relationship("UserSuspicions", back_populates="user", cascade="all, delete-orphan")
     records = db.relationship("UserRecords", back_populates="user", cascade="all, delete-orphan")
+    roles = db.relationship("UserRole", back_populates="user", cascade="all, delete-orphan")
     stats = db.relationship("UserStats", back_populates="user", cascade="all, delete-orphan")
     waiting_prompts = db.relationship("WaitingPrompt", back_populates="user", cascade="all, delete-orphan")
     interrogations = db.relationship("Interrogation", back_populates="user", cascade="all, delete-orphan")
     filters = db.relationship("Filter", back_populates="user")
 
+    ## TODO: Figure out how to make the below work
+    # def get_role_expr(cls, role):
+    #     subquery = db.session.query(UserRole.user_id
+    #         ).filter(
+    #             UserRole.user_role == UserRoleTypes.MODERATOR,
+    #             UserRole.value == True,
+    #             UserRole.user_id == cls.id
+    #         ).correlate(
+    #             cls
+    #         ).as_scalar()
+    #     return cls.id == subquery
+
+    @hybrid_property
+    def trusted(self) -> bool:
+        user_role = UserRole.query.filter_by(
+            user_id=self.id, 
+            user_role=UserRoleTypes.TRUSTED
+        ).first()
+        return user_role is not None and user_role.value
+
+    @trusted.expression
+    def trusted(cls):
+        subquery = db.session.query(UserRole.user_id
+            ).filter(
+                UserRole.user_role == UserRoleTypes.TRUSTED,
+                UserRole.value == True,
+                UserRole.user_id == cls.id
+            ).correlate(
+                cls
+            ).as_scalar()
+        return cls.id == subquery
+
+    @hybrid_property
+    def flagged(self) -> bool:
+        user_role = UserRole.query.filter_by(
+            user_id=self.id, 
+            user_role=UserRoleTypes.FLAGGED
+        ).first()
+        return user_role is not None and user_role.value
+
+
+    @flagged.expression
+    def flagged(cls):
+        subquery = db.session.query(UserRole.user_id
+            ).filter(
+                UserRole.user_role == UserRoleTypes.FLAGGED,
+                UserRole.value == True,
+                UserRole.user_id == cls.id
+            ).correlate(
+                cls
+            ).as_scalar()
+        return cls.id == subquery
+
+    @hybrid_property
+    def moderator(self) -> bool:
+        user_role = UserRole.query.filter_by(
+            user_id=self.id, 
+            user_role=UserRoleTypes.MODERATOR
+        ).first()
+        return user_role is not None and user_role.value
+
+    @moderator.expression
+    def moderator(cls):
+        subquery = db.session.query(UserRole.user_id
+            ).filter(
+                UserRole.user_role == UserRoleTypes.MODERATOR,
+                UserRole.value == True,
+                UserRole.user_id == cls.id
+            ).correlate(
+                cls
+            ).as_scalar()
+        return cls.id == subquery
+
+    @hybrid_property
+    def customizer(self) -> bool:
+        user_role = UserRole.query.filter_by(
+            user_id=self.id, 
+            user_role=UserRoleTypes.CUSTOMIZER
+        ).first()
+        return user_role is not None and user_role.value
+
+    @customizer.expression
+    def customizer(cls):
+        subquery = db.session.query(UserRole.user_id
+            ).filter(
+                UserRole.user_role == UserRoleTypes.CUSTOMIZER,
+                UserRole.value == True,
+                UserRole.user_id == cls.id
+            ).correlate(
+                cls
+            ).as_scalar()
+        return cls.id == subquery
+
+    @hybrid_property
+    def vpn(self) -> bool:
+        user_role = UserRole.query.filter_by(
+            user_id=self.id, 
+            user_role=UserRoleTypes.VPN
+        ).first()
+        return user_role is not None and user_role.value
+
+    @vpn.expression
+    def vpn(cls):
+        subquery = db.session.query(UserRole.user_id
+            ).filter(
+                UserRole.user_role == UserRoleTypes.VPN,
+                UserRole.value == True,
+                UserRole.user_id == cls.id
+            ).correlate(
+                cls
+            ).as_scalar()
+        return cls.id == subquery
+
     def create(self):
         self.check_for_bad_actor()
-        logger.debug(self.api_key)
         db.session.add(self)
         db.session.commit()
-        logger.debug(self.api_key)
         logger.info(f"New User Created {self.get_unique_alias()}")
         
 
@@ -131,12 +302,38 @@ class User(db.Model):
         db.session.commit()
         return("OK")
 
+    def set_user_role(self, role, value):
+        user_role = UserRole.query.filter_by(
+            user_id=self.id, 
+            user_role=role,
+        ).first()
+        if value is False:
+            if user_role is None:
+                return
+            else:
+                # No entry means false
+                db.session.delete(user_role)
+                db.session.commit()
+                return 
+        if user_role is None:
+            new_role = UserRole(
+                user_id=self.id, 
+                user_role=role,
+                value=value
+            )
+            db.session.add(new_role)
+            db.session.commit()
+            return
+        logger.debug(user_role)
+        if user_role.value is False:
+            user_role.value = True
+            db.session.commit()
+
     def set_trusted(self,is_trusted):
         # Anonymous can never be trusted
         if self.is_anon():
             return
-        self.trusted = is_trusted
-        db.session.commit()
+        self.set_user_role(UserRoleTypes.TRUSTED, is_trusted)
         if self.trusted:
             for worker in self.workers:
                 worker.paused = False
@@ -145,17 +342,25 @@ class User(db.Model):
         # Anonymous can never be flagged
         if self.is_anon():
             return
-        self.flagged = is_flagged
-        db.session.commit()
+        self.set_user_role(UserRoleTypes.FLAGGED, is_flagged)
 
     def set_moderator(self,is_moderator):
         if self.is_anon():
             return
-        self.moderator = is_moderator
-        db.session.commit()
+        self.set_user_role(UserRoleTypes.MODERATOR, is_moderator)
         if self.moderator:
             logger.warning(f"{self.username} Set as moderator")
             self.set_trusted(True)
+
+    def set_customizer(self, is_customizer):
+        if self.is_anon():
+            return
+        self.set_user_role(UserRoleTypes.CUSTOMIZER, is_customizer)
+
+    def set_vpn(self, is_vpn):
+        if self.is_anon():
+            return
+        self.set_user_role(UserRoleTypes.VPN, is_vpn)
 
     def get_unique_alias(self):
         return(f"{self.username}#{self.id}")
@@ -233,10 +438,18 @@ class User(db.Model):
         All the evaluating Kudos added to their total and they automatically become trusted
         Suspicious users do not automatically pass evaluation
         '''
-        if self.evaluating_kudos >= int(os.getenv("KUDOS_TRUST_THRESHOLD")) and not self.is_suspicious() and not self.is_anon():
-            self.modify_kudos(self.evaluating_kudos,"accumulated")
-            self.evaluating_kudos = 0
-            self.set_trusted(True)
+        if self.evaluating_kudos <= int(os.getenv("KUDOS_TRUST_THRESHOLD")):
+            return
+        if self.is_suspicious():
+            return
+        if self.is_anon():
+            return
+        # An account has to exist for at least 1 week to become trusted automatically
+        if (datetime.utcnow() - self.created).total_seconds() < 86400 * 7:
+            return
+        self.modify_kudos(self.evaluating_kudos,"accumulated")
+        self.evaluating_kudos = 0
+        self.set_trusted(True)
 
     def modify_monthly_kudos(self, monthly_kudos):
         # We always give upfront the monthly kudos to the user once.
@@ -261,14 +474,17 @@ class User(db.Model):
             has_month_passed = True
         if has_month_passed:
             # Not committing as it'll happen in modify_kudos() anyway
-            self.monthly_kudos_last_received = self.monthly_kudos_last_received + dateutil.relativedelta.relativedelta(months=+1)
+            if not self.monthly_kudos_last_received:
+                self.monthly_kudos_last_received = datetime.utcnow() + dateutil.relativedelta.relativedelta(months=+1)
+            else:
+                self.monthly_kudos_last_received = self.monthly_kudos_last_received + dateutil.relativedelta.relativedelta(months=+1)
             self.modify_kudos(kudos_amount, "recurring")
             logger.info(f"User {self.get_unique_alias()} received their {kudos_amount} monthly Kudos")
 
     def calculate_monthly_kudos(self):
         base_amount = self.monthly_kudos
         if self.moderator:
-            base_amount += 100000
+            base_amount += 300000
         base_amount += patrons.get_monthly_kudos(self.id)
         return(base_amount)
 
@@ -350,6 +566,14 @@ class User(db.Model):
     def count_workers(self):
         return(len(self.workers))
 
+    def count_sharedkeys(self):
+        return(len(self.sharedkeys))
+
+    def max_sharedkeys(self):
+        if self.trusted:
+            return 10
+        return 3
+
     def is_suspicious(self): 
         if self.trusted:
             return(False)
@@ -365,7 +589,10 @@ class User(db.Model):
         for worker in self.workers:
             if worker.ipaddr == ipaddr:
                 ipcount += 1
-        if ipcount > self.SAME_IP_WORKER_THRESHOLD and ipcount > self.worker_invited:
+        if self.trusted:
+            if ipcount > self.SAME_IP_TRUSTED_WORKER_THRESHOLD and ipcount > self.worker_invited:
+                return(True)
+        elif ipcount > self.SAME_IP_WORKER_THRESHOLD and ipcount > self.worker_invited:
             return(True)
         return(False)
 
@@ -396,20 +623,6 @@ class User(db.Model):
             kudos_details_dict[stat.action] = stat.value
         return kudos_details_dict
 
-    def compile_usage_details(self):
-        usage_dict = {  
-            thing_name: self.usage_thing,
-            "requests": self.usage_requests
-        }
-        return usage_dict
-
-    def compile_contribution_details(self):
-        usage_dict = {
-            thing_name: self.contributed_thing,
-            "fulfillments": self.contributed_fulfillments
-        }
-        return usage_dict
-
     def compile_records_details(self):
         records_dict = {}
         for r in self.records:
@@ -429,8 +642,8 @@ class User(db.Model):
             "id": self.id,
             "kudos": self.kudos,
             "kudos_details": self.compile_kudos_details(),
-            "usage": self.compile_usage_details(), # Obsolete in favor or records
-            "contributions": self.compile_contribution_details(), # Obsolete in favor or records
+            "usage": {}, # Obsolete in favor or records
+            "contributions": {}, # Obsolete in favor or records
             "records": self.compile_records_details(),
             "concurrency": self.concurrency,
             "worker_invited": self.worker_invited,
@@ -439,16 +652,21 @@ class User(db.Model):
             "flagged": self.flagged,
             "pseudonymous": self.is_pseudonymous(),
             "worker_count": self.count_workers(),
-            "account_age": (datetime.utcnow() - self.created).seconds,
+            "account_age": (datetime.utcnow() - self.created).total_seconds(),
             # unnecessary information, since the workers themselves wil be visible
             # "public_workers": self.public_workers,
         }
         if self.public_workers or details_privilege >= 1:
             workers_array = []
             for worker in self.workers:
-                workers_array.append(worker.id)
+                workers_array.append(str(worker.id))
             ret_dict["worker_ids"] = workers_array
             ret_dict['contact'] = self.contact
+        if details_privilege >= 1:
+            sharedkeys_array = []
+            for sk in self.sharedkeys:
+                sharedkeys_array.append(str(sk.id))
+            ret_dict["sharedkey_ids"] = sharedkeys_array
         if details_privilege >= 2:
             mk_dict = {
                 "amount": self.calculate_monthly_kudos(),

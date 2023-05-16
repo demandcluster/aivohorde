@@ -3,7 +3,7 @@ import os
 import regex as re
 import time
 import random
-from datetime import datetime
+from datetime import datetime, timedelta
 from sqlalchemy.exc import IntegrityError,InvalidRequestError
 from sqlalchemy import literal
 from sqlalchemy import func, or_, and_
@@ -17,7 +17,7 @@ from horde.limiter import limiter
 from horde.logger import logger
 from horde.argparser import args
 from horde import exceptions as e
-from horde.classes.base.user import User
+from horde.classes.base.user import User, UserSharedKey
 from horde.classes.base.waiting_prompt import WaitingPrompt
 from horde.classes.base.worker import Worker
 import horde.classes.base.stats as stats
@@ -25,7 +25,7 @@ from horde.classes.base.team import Team
 from horde.classes.base.news import News
 from horde.classes.base.detection import Filter
 from horde.suspicions import Suspicions
-from horde.utils import is_profane, sanitize_string
+from horde.utils import is_profane, sanitize_string, hash_api_key, hash_dictionary
 from horde.countermeasures import CounterMeasures
 from horde import horde_redis as hr
 from horde.patreon import patrons
@@ -50,6 +50,7 @@ models = Models(api)
 parsers = Parsers()
 
 handle_bad_request = api.errorhandler(e.BadRequest)(e.handle_bad_requests)
+handle_forbidden = api.errorhandler(e.Forbidden)(e.handle_bad_requests)
 handle_missing_prompts = api.errorhandler(e.MissingPrompt)(e.handle_bad_requests)
 handle_corrupt_prompt = api.errorhandler(e.CorruptPrompt)(e.handle_bad_requests)
 handle_kudos_validation_error = api.errorhandler(e.KudosValidationError)(e.handle_bad_requests)
@@ -99,7 +100,12 @@ locked = api.errorhandler(e.Locked)(e.handle_bad_requests)
 # Used to for the flask limiter, to limit requests per url paths
 def get_request_path():
     # logger.info(dir(request))
-    return(f"{request.remote_addr}@{request.method}@{request.path}")
+    return f"{request.remote_addr}@{request.method}@{request.path}"
+
+def get_request_api_key():
+    apikey = hash_api_key(request.headers.get("apikey", 0000000000))
+    return f"{apikey}@{request.method}@{request.path}"
+
 
 def check_for_mod(api_key, operation, whitelisted_users = None):
     mod = database.find_user_by_api_key(api_key)
@@ -125,6 +131,11 @@ class GenerateTemplate(Resource):
         self.models = []
         if self.args.models:
             self.models = self.args.models.copy()
+        params_hash = self.get_hashed_params_dict()
+        cached_payload_kudos_calc = hr.horde_r_get(f"payload_kudos_{params_hash}")
+        if cached_payload_kudos_calc and self.args.dry_run:
+            self.kudos = float(cached_payload_kudos_calc)
+            return 
         self.workers = []
         if self.args.workers:
             self.workers = self.args.workers
@@ -136,8 +147,32 @@ class GenerateTemplate(Resource):
         #logger.warning(datetime.utcnow())
         self.initiate_waiting_prompt()
         #logger.warning(datetime.utcnow())
+        if self.args.dry_run:
+            self.kudos = self.extrapolate_dry_run_kudos()
+            self.wp.delete()
+            return
         self.activate_waiting_prompt()
+        # We use the wp.kudos to avoid calling the model twice.
+        self.kudos = self.wp.kudos
         #logger.warning(datetime.utcnow())
+
+    # Extend if extra payload information needs to be sent
+    def extrapolate_dry_run_kudos(self):
+        kudos = self.wp.extrapolate_dry_run_kudos()
+        params_hash = self.get_hashed_params_dict()
+        hr.horde_r_setex(f"payload_kudos_{params_hash}", timedelta(days=2), kudos)
+        return kudos
+
+    # Override if extra payload information needs to be sent
+    def get_hashed_params_dict(self):
+        '''We create a simulacra dictionary of the WP payload to cache in redis with the expected kudos cache
+        This avoids us having to create a WP object just to get the parameters dict.
+        This is needed because some parameters are injected into the dict for the model, during runtime.
+        So we need the logic of each GenerateTemplate class to be able to override this class to adjust the params dict accordingly.
+        '''
+        gen_payload = self.params.copy()
+        params_hash = hash_dictionary(gen_payload)
+        return params_hash
 
     # We split this into its own function, so that it may be overriden and extended
     def validate(self):
@@ -146,7 +181,14 @@ class GenerateTemplate(Resource):
         with HORDE.app_context():  # TODO DOUBLE CHECK THIS
             #logger.warning(datetime.utcnow())
             if self.args.apikey:
-                self.user = database.find_user_by_api_key(self.args['apikey'])
+                self.sharedkey = database.find_sharedkey(self.args.apikey)
+                if self.sharedkey:
+                    is_valid, error_msg = self.sharedkey.is_valid()
+                    if not is_valid:
+                        raise e.Forbidden(error_msg)
+                    self.user = self.sharedkey.user
+                if not self.user:
+                    self.user = database.find_user_by_api_key(self.args.apikey)
             #logger.warning(datetime.utcnow())
             if not self.user:
                 raise e.InvalidAPIKey('generation')
@@ -234,15 +276,17 @@ class GenerateTemplate(Resource):
     # We split this into its own function, so that it may be overriden
     def initiate_waiting_prompt(self):
         self.wp = WaitingPrompt(
-            self.workers,
-            self.models,
+            worker_ids = self.workers,
+            models = self.models,
             prompt = self.args["prompt"],
             user_id = self.user.id,
             params = self.params,
             nsfw = self.args.nsfw,
             censor_nsfw = self.args.censor_nsfw,
             trusted_workers = self.args.trusted_workers,
+            worker_blacklist = self.args.worker_blacklist,
             ipaddr = self.user_ip,
+            sharedkey_id = self.args.apikey if self.sharedkey else None,
         )
     
     # We split this into its own function, so that it may be overriden and extended
@@ -394,6 +438,8 @@ class JobPopTemplate(Resource):
             raise e.InvalidAPIKey('prompt pop')
         if self.user.flagged:
             raise e.WorkerMaintenance("Your user has been flagged by our community for suspicious activity. Please contact us on discord: https://discord.gg/3DxrhksKzn")
+        if self.user.is_anon():
+            raise e.AnonForbidden
         self.worker_name = sanitize_string(self.args['name'])
         self.worker = database.find_worker_by_name(self.worker_name, worker_class=self.worker_class)
         if not self.worker and database.worker_name_exists(self.worker_name):
@@ -411,9 +457,14 @@ class JobPopTemplate(Resource):
             worker_count = self.user.count_workers()
             if settings.mode_invite_only() and worker_count >= self.user.worker_invited:
                 raise e.WorkerInviteOnly(worker_count)
+            # Untrusted users can only have 3 workers
+            if not self.user.trusted and worker_count > 3:
+                raise e.Forbidden("To avoid abuse, untrusted users can only have up to 3 distinct workers.")
+            # Trusted users can have up to 20 workers by default unless overriden
+            if worker_count > 20 and worker_count > self.user.worker_invited:
+                raise e.Forbidden("To avoid abuse, tou cannot onboard more than 20 workers as a trusted user. Please contact us on Discord to adjust.")
             if self.user.exceeding_ipaddr_restrictions(self.worker_ip):
-                # raise e.TooManySameIPs(self.user.username) # TODO: Renable when IP works
-                pass
+                raise e.TooManySameIPs(self.user.username)
             self.worker = self.worker_class(
                 user_id=self.user.id,
                 name=self.worker_name,
@@ -424,7 +475,7 @@ class JobPopTemplate(Resource):
 
     def check_ip(self):
         self.safe_ip = True
-        if not self.user.trusted and not patrons.is_patron(self.user.id):
+        if not self.user.trusted and not self.user.vpn and not patrons.is_patron(self.user.id):
             self.safe_ip = CounterMeasures.is_ip_safe(self.worker_ip)
             if self.safe_ip is None:
                 raise e.TooManyNewIPs(self.worker_ip)
@@ -485,6 +536,10 @@ class TransferKudos(Resource):
     parser.add_argument("username", type=str, required=True, help="The user ID which will receive the kudos", location="json")
     parser.add_argument("amount", type=int, required=False, default=100, help="The amount of kudos to transfer", location="json")
 
+    decorators = [
+        limiter.limit("1/second", key_func = get_request_api_key),
+        limiter.limit("90/hour", key_func = get_request_api_key), 
+    ]
     @api.expect(parser)
     @api.marshal_with(models.response_model_kudos_transfer, code=200, description='Kudos Transferred')
     @api.response(400, 'Validation Error', models.response_model_error)
@@ -516,7 +571,8 @@ class AwardKudos(Resource):
     @api.response(401, 'Invalid API Key', models.response_model_error)
     @api.response(403, 'Access Denied', models.response_model_error)
     def post(self):
-        '''Award Kudos to registed user
+        '''Awards Kudos to registed user. 
+        This API can only be used through privileged access.
         '''
         self.args = self.parser.parse_args()
         user = database.find_user_by_api_key(self.args['apikey'])
@@ -604,20 +660,29 @@ class WorkerSingle(Resource):
         Can retrieve the details of a worker even if inactive
         (A worker is considered inactive if it has not checked in for 5 minutes)
         '''
-        worker = database.find_worker_by_id(worker_id)
-        if not worker:
-            raise e.WorkerNotFound(worker_id)
+        cache_exists = True
         details_privilege = 0
         self.args = self.get_parser.parse_args()
         if self.args.apikey:
             admin = database.find_user_by_api_key(self.args['apikey'])
-            if not admin:
-                raise e.InvalidAPIKey('admin worker details')
-            if not admin.moderator:
-                raise e.NotModerator(admin.get_unique_alias(), 'ModeratorWorkerDetails')
-            details_privilege = 2
-        worker_details = worker.get_details(details_privilege)
-        # logger.debug(worker_details)
+            if admin and admin.moderator:
+                details_privilege = 2
+        if not hr.horde_r:
+            cache_exists = False
+        if details_privilege > 0:
+            cache_name = f"cached_worker_{worker_id}_privileged"
+            cached_worker = hr.horde_r_get(cache_name)
+        else:
+            cache_name = f"cached_worker_{worker_id}"
+        cached_worker = hr.horde_r_get(cache_name)
+        if cache_exists and cached_worker:
+            worker_details = json.loads(cached_worker)
+        else:
+            worker = database.find_worker_by_id(worker_id)
+            if not worker:
+                raise e.WorkerNotFound(worker_id)
+            worker_details = worker.get_details(details_privilege)
+            hr.horde_r_setex_json(cache_name, timedelta(seconds=300), worker_details)
         return worker_details,200
 
     put_parser = reqparse.RequestParser()
@@ -749,18 +814,47 @@ class WorkerSingle(Resource):
 class Users(Resource):
     get_parser = reqparse.RequestParser()
     get_parser.add_argument("Client-Agent", default="unknown:0:unknown", type=str, required=False, help="The client name and version", location="headers")
+    get_parser.add_argument("page", required=False, default=1, type=int, help="Which page of results to return. Each page has 25 users.", location="args")
+    get_parser.add_argument("sort", required=False, default='kudos', type=str, help="How to sort the returned list", location="args")
 
-    decorators = [limiter.limit("30/minute")]
-    @cache.cached(timeout=10)
+    decorators = [limiter.limit("90/minute")]
+    # @cache.cached(timeout=10)
     @api.expect(get_parser)
     @api.marshal_with(models.response_model_user_details, code=200, description='Users List')
     def get(self): # TODO - Should this be exposed?
         '''A List with the details and statistic of all registered users
         '''
-        return ([],200) #FIXME: Debat
-        all_users = db.session.query(User)
-        users_list = [user.get_details() for user in all_users]
-        return(users_list,200)
+        self.args = self.get_parser.parse_args()
+        return (self.retrieve_users_details(),200)
+
+    @logger.catch(reraise=True)
+    def retrieve_users_details(self):
+        sort=self.args.sort
+        page=self.args.page
+        # I don't have 250K users, so might as well return immediately.
+        # TODO: Adjust is I ever get more than 250K users >_<
+        if page > 10000:
+            return []
+        if not hr.horde_r:
+            return self.get_user_list(sort=sort, page=page)
+        cache_name = f'users_cache_{sort}_{page}'
+        cached_users = hr.horde_r_get(cache_name)
+        if cached_users is None:
+            logger.debug(f"No user cache found for sort: {sort} page:{page}")
+            users = self.get_user_list(sort=sort, page=page)
+            hr.horde_r_setex_json(cache_name, timedelta(seconds=300), users)
+            return users
+        return json.loads(cached_users)
+
+    def get_user_list(self, sort="kudos", page=1):
+        users_ret = []
+        if sort not in ["kudos", "age"]:
+            sort = "kudos"
+        if page < 1:
+            page = 1
+        for user in database.get_all_users(sort=sort,offset=(page-1)*25):
+            users_ret.append(user.get_details())
+        return users_ret
 
 
 class UserSingle(Resource):
@@ -770,29 +864,43 @@ class UserSingle(Resource):
 
     decorators = [limiter.limit("60/minute", key_func = get_request_path)]
     @api.expect(get_parser)
-    @cache.cached(timeout=3)
     @api.marshal_with(models.response_model_user_details, code=200, description='User Details', skip_none=True)
     @api.response(404, 'User Not Found', models.response_model_error)
     def get(self, user_id = ''):
         '''Details and statistics about a specific user
         '''
-        user = database.find_user_by_id(user_id)
-        if not user:
-            raise e.UserNotFound(user_id)
-        details_privilege = 0
+        if not user_id.isdigit():
+            raise e.UserNotFound("Please use only the numerical part of the userID. E.g. the '1' in 'db0#1'")
         self.args = self.get_parser.parse_args()
+        details_privilege = 0
         if self.args.apikey:
             admin = database.find_user_by_api_key(self.args['apikey'])
-            if not admin:
-                raise e.InvalidAPIKey('privileged user details')
             if admin.moderator:
                 details_privilege = 2
             elif admin == user:
                 details_privilege = 1
-            else:
-                raise e.NotModerator(admin.get_unique_alias(), 'ModeratorWorkerDetails')
-        ret_dict = {}
-        return(user.get_details(details_privilege),200)
+        cached_user = None
+        cache_name = f"cached_user_id_{user_id}_privilege_{details_privilege}"
+        if hr.horde_r:
+            cached_user = hr.horde_r_get(cache_name)
+        if cached_user:
+            user_details = json.loads(cached_user)
+            if type(user_details.get("monthly_kudos",{}).get("last_received")) == str:
+                user_details["monthly_kudos"]["last_received"] = datetime.fromisoformat(user_details["monthly_kudos"]["last_received"])
+        else:
+            user = database.find_user_by_id(user_id)
+            if not user:
+                raise e.UserNotFound(user_id)
+            user_details = user.get_details(details_privilege)
+            if hr.horde_r:
+                cached_details = user_details.copy()
+                if "monthly_kudos" in cached_details:
+                    cached_details["monthly_kudos"] = cached_details["monthly_kudos"].copy()
+                if user_details.get("monthly_kudos",{}).get("last_received"):
+                    cached_details["monthly_kudos"]["last_received"] = cached_details["monthly_kudos"]["last_received"].isoformat()
+                hr.horde_r_setex_json(cache_name, timedelta(seconds=300), cached_details)
+        return user_details,200
+
 
     parser = reqparse.RequestParser()
     parser.add_argument("apikey", type=str, required=True, help="The Admin API key", location='headers')
@@ -807,6 +915,8 @@ class UserSingle(Resource):
     parser.add_argument("monthly_kudos", type=int, required=False, help="When specified, will start assigning the user monthly kudos, starting now!", location="json")
     parser.add_argument("trusted", type=bool, required=False, help="When set to true,the user and their servers will not be affected by suspicion", location="json")
     parser.add_argument("flagged", type=bool, required=False, help="When set to true, the user cannot tranfer kudos and all their workers are put into permanent maintenance.", location="json")
+    parser.add_argument("customizer", type=bool, required=False, help="When set to true, the user will be able to serve custom Stable Diffusion models which do not exist in the Official AI Horde Model Reference.", location="json")
+    parser.add_argument("vpn", type=bool, required=False, help="When set to true, the user will be able to onboard workers behind a VPN. This should be used as a temporary solution until the user is trusted.", location="json")
     parser.add_argument("contact", type=str, required=False, location="json")
     parser.add_argument("reset_suspicion", type=bool, required=False, location="json")
 
@@ -870,6 +980,16 @@ class UserSingle(Resource):
                 raise e.NotModerator(admin.get_unique_alias(), 'PUT UserSingle')
             user.set_flagged(self.args.flagged)
             ret_dict["flagged"] = user.flagged
+        if self.args.customizer is not None:
+            if not admin.moderator:
+                raise e.NotModerator(admin.get_unique_alias(), 'PUT UserSingle')
+            user.set_customizer(self.args.customizer)
+            ret_dict["customizer"] = user.customizer
+        if self.args.vpn is not None:
+            if not admin.moderator:
+                raise e.NotModerator(admin.get_unique_alias(), 'PUT UserSingle')
+            user.set_vpn(self.args.vpn)
+            ret_dict["vpn"] = user.vpn
         if self.args.reset_suspicion is not None:
             if not admin.moderator:
                 raise e.NotModerator(admin.get_unique_alias(), 'PUT UserSingle')
@@ -925,11 +1045,32 @@ class FindUser(Resource):
         self.args = self.get_parser.parse_args()
         if not self.args.apikey:
             raise e.InvalidAPIKey('GET FindUser')
-        user = database.find_user_by_api_key(self.args.apikey)
-        if not user:
-            raise e.UserNotFound(self.args.apikey, 'api_key')
-        return(user.get_details(1),200)
-
+        cached_user = None
+        cache_name = f"cached_apikey_user_{hash_api_key(self.args.apikey)}"
+        if hr.horde_r:
+            cached_user = hr.horde_r_get(cache_name)
+        if cached_user:
+            user_details = json.loads(cached_user)
+        else:
+            user = database.find_user_by_sharedkey(self.args.apikey)
+            sharedkey = True
+            privilege = 0
+            if not user:
+                user = database.find_user_by_api_key(self.args.apikey)
+                sharedkey = False
+                privilege = 1
+            if not user:
+                raise e.UserNotFound(self.args.apikey, 'api_key')
+            user_details = user.get_details(privilege)
+            if sharedkey:
+                sk = database.find_sharedkey(self.args.apikey)
+                skname = ''
+                if sk.name is not None:
+                    skname = f": {sk.name}"
+                user_details["username"] = user_details["username"] + f" (Shared Key{skname})"
+            if hr.horde_r:
+                hr.horde_r_setex_json(cache_name, timedelta(seconds=300), user_details)
+        return(user_details,200)
 
 class Models(Resource):
     get_parser = reqparse.RequestParser()
@@ -1499,4 +1640,124 @@ class Heartbeat(Resource):
             'message': 'OK',
             'version': HORDE_VERSION,
         },200
-        
+
+
+class SharedKey(Resource):
+    put_parser = reqparse.RequestParser()
+    put_parser.add_argument("apikey", type=str, required=True, help="User API key", location='headers')
+    put_parser.add_argument("Client-Agent", default="unknown:0:unknown", type=str, required=False, help="The client name and version", location="headers")
+    put_parser.add_argument("kudos", type=int, required=False, default=5000, help="The amount of kudos limit available to this key", location="json")
+    put_parser.add_argument("expiry", type=int, required=False, default=-1, help="The amount of days which this key will stay active.", location="json")
+    put_parser.add_argument("name", type=str, required=False, help="A descriptive name for this key", location="json")
+
+    decorators = [limiter.limit("5/minute", key_func = get_request_path)]
+    @api.expect(put_parser, models.input_model_sharedkey)
+    @api.marshal_with(models.response_model_sharedkey_details, code=200, description='SharedKey Details', skip_none=True)
+    @api.response(400, 'Validation Error', models.response_model_error)
+    @api.response(401, 'Invalid API Key', models.response_model_error)
+    @api.response(403, 'Access Denied', models.response_model_error)
+    @api.response(404, 'Shared Key Not Found', models.response_model_error)
+    def put(self):
+        '''Create a new SharedKey for this user
+        '''
+        self.args = self.put_parser.parse_args()
+        user: User = database.find_user_by_api_key(self.args.apikey)
+        if not user:
+            raise e.InvalidAPIKey("get sharedkey")
+        if user.is_anon():
+            raise e.AnonForbidden
+        if user.count_sharedkeys() > user.max_sharedkeys():
+            raise e.Forbidden(f"You cannot have more than {user.max_sharedkeys()} shared keys.")
+        expiry = None
+        if self.args.expiry and self.args.expiry != -1:
+            expiry = datetime.utcnow() + timedelta(days=self.args.expiry)
+        new_key = UserSharedKey(
+            user_id = user.id,
+            kudos = self.args.kudos,
+            expiry = expiry,
+            name = self.args.name,
+        )
+        db.session.add(new_key)
+        db.session.commit()
+        return new_key.get_details(),200
+
+
+class SharedKeySingle(Resource):
+    get_parser = reqparse.RequestParser()
+    get_parser.add_argument("Client-Agent", default="unknown:0:unknown", type=str, required=False, help="The client name and version", location="headers")
+
+    @cache.cached(timeout=60)
+    @api.expect(get_parser)
+    @api.marshal_with(models.response_model_sharedkey_details, code=200, description='Shared Key Details', skip_none=True)
+    @api.response(404, 'Shared Key Not Found', models.response_model_error)
+    def get(self, sharedkey_id=''):
+        '''Get details about an existing Shared Key for this user
+        '''
+        self.args = self.get_parser.parse_args()
+        sharedkey = database.find_sharedkey(sharedkey_id)
+        if not sharedkey:
+            raise e.InvalidAPIKey("get sharedkey", keytype="Shared")
+        return sharedkey.get_details(),200
+
+    patch_parser = reqparse.RequestParser()
+    patch_parser.add_argument("apikey", type=str, required=True, help="User API key", location='headers')
+    patch_parser.add_argument("Client-Agent", default="unknown:0:unknown", type=str, required=False, help="The client name and version", location="headers")
+    patch_parser.add_argument("kudos", type=int, required=False, help="The amount of kudos limit available to this key", location="json")
+    patch_parser.add_argument("expiry", type=int, required=False, help="The amount of days from today which this key will stay active.", location="json")
+    patch_parser.add_argument("name", type=str, required=False, help="A descriptive name for this key", location="json")
+
+    @api.expect(patch_parser, models.input_model_sharedkey)
+    @api.marshal_with(models.response_model_sharedkey_details, code=200, description='Shared Key Details', skip_none=True)
+    @api.response(400, 'Validation Error', models.response_model_error)
+    @api.response(401, 'Invalid API Key', models.response_model_error)
+    @api.response(403, 'Access Denied', models.response_model_error)
+    @api.response(404, 'Shared Key Not Found', models.response_model_error)
+    def patch(self, sharedkey_id=''):
+        '''Modify an existing Shared Key
+        '''
+        self.args = self.patch_parser.parse_args()
+        sharedkey = database.find_sharedkey(sharedkey_id)
+        if not sharedkey:
+            raise e.InvalidAPIKey("Shared Key Not Found.", keytype="Shared")
+        user = database.find_user_by_api_key(self.args.apikey)
+        if not user:
+            raise e.InvalidAPIKey("patch sharedkey")
+        if sharedkey.user_id != user.id:
+            raise e.Forbidden(f"Shared Key {sharedkey.id} belongs to {sharedkey.user.get_unique_alias()} and not to {user.get_unique_alias()}.")
+        if not self.args.expiry and not self.args.kudos and not self.arg.name:
+            raise e.NoValidActions("No shared key modification selected!")
+        if self.args.expiry is not None:
+            if self.args.expiry == -1:
+                sharedkey.expiry = None
+            else:
+                sharedkey.expiry = datetime.utcnow() + timedelta(days=self.args.expiry)
+        if self.args.kudos is not None:
+            sharedkey.kudos = self.args.kudos
+        if self.args.name is not None:
+            sharedkey.name = self.args.name
+        db.session.commit()
+        return sharedkey.get_details(),200
+
+    delete_parser = reqparse.RequestParser()
+    delete_parser.add_argument("apikey", type=str, required=True, help="User API key", location='headers')
+    delete_parser.add_argument("Client-Agent", default="unknown:0:unknown", type=str, required=False, help="The client name and version", location="headers")
+
+    @api.expect(delete_parser)
+    @api.marshal_with(models.response_model_simple_response, code=200, description='Shared Key Deleted')
+    @api.response(404, 'Shared Key Not Found', models.response_model_error)
+    def delete(self, sharedkey_id=''):
+        '''Delete an existing SharedKey for this user
+        '''
+        self.args = self.delete_parser.parse_args()
+        sharedkey = database.find_sharedkey(sharedkey_id)
+        if not sharedkey:
+            raise e.InvalidAPIKey("Shared Key Not Found.", keytype="Shared")
+        user = database.find_user_by_api_key(self.args.apikey)
+        if not user:
+            raise e.InvalidAPIKey("delete sharedkey")
+        if sharedkey.user_id != user.id:
+            raise e.Forbidden(f"Shared Key {sharedkey.id} belongs to {sharedkey.user.get_unique_alias()} and not to {user.get_unique_alias()}.")
+        db.session.delete(sharedkey)
+        db.session.commit()
+        return {"message": "OK"},200
+

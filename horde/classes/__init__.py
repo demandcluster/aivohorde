@@ -20,7 +20,6 @@ import horde.classes.base.stats
 from horde.classes.base.detection import Filter
 
 with HORDE.app_context():
-
     # from sqlalchemy import select
     # logger.debug(select(ImageWorker.speed))
     # q = ImageWorker.query.filter(ImageWorker.speed > 2000000)
@@ -30,8 +29,14 @@ with HORDE.app_context():
     # sys.exit()
     db.create_all()
 
+    if args.convert_flag == "roles":
+        from horde.conversions import convert_user_roles
+
+        convert_user_roles()
+
     if args.convert_flag == "SQL":
         from horde.conversions import convert_json_db
+
         convert_json_db()
 
     anon = db.session.query(User).filter_by(oauth_id="anon").first()
@@ -42,7 +47,7 @@ with HORDE.app_context():
             oauth_id="anon",
             api_key=hash_api_key("0000000000"),
             public_workers=True,
-            concurrency=500
+            concurrency=500,
         )
         anon.create()
     settings = HordeSettings.query.first()

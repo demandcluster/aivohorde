@@ -108,7 +108,8 @@ class ImageModels(v2.Models):
             'trusted_workers': fields.Boolean(default=False,description="When true, only trusted workers will serve this request. When False, Evaluating workers will also be used which can increase speed but adds more risk!"),
             'slow_workers': fields.Boolean(default=True,description="When True, allows slower workers to pick up this request. Disabling this incurs an extra kudos cost."),
             'censor_nsfw': fields.Boolean(default=False,description="If the request is SFW, and the worker accidentaly generates NSFW, it will send back a censored image."),
-            'workers': fields.List(fields.String(description="Specify which workers are allowed to service this request")),
+            'workers': fields.List(fields.String(description="Specify up to 5 workers which are allowed to service this request.")),
+            'worker_blacklist': fields.Boolean(default=False,required=False,description="If true, the worker list will be treated as a blacklist instead of a whitelist."),
             'models': fields.List(fields.String(description="Specify which models are allowed to be used for this request")),
             'source_image': fields.String(required=False, description="The Base64-encoded webp to use for img2img"),
             'source_processing': fields.String(required=False, default='img2img',enum=["img2img", "inpainting", "outpainting"], description="If source_image is provided, specifies how to process it."), 
@@ -116,6 +117,7 @@ class ImageModels(v2.Models):
             'r2': fields.Boolean(default=True, description="If True, the image will be sent via cloudflare r2 download link"),
             'shared': fields.Boolean(default=False, description="If True, The image will be shared with LAION for improving their dataset. This will also reduce your kudos consumption by 2. For anonymous users, this is always True."),
             'replacement_filter': fields.Boolean(default=True,description="If enabled, suspicious prompts are sanitized through a string replacement filter instead."),
+            'dry_run': fields.Boolean(default=False,description="When false, the endpoint will simply return the cost of the request in kudos and exit."),
         })
         self.response_model_team_details = api.inherit('TeamDetailsStable', self.response_model_team_details, {
             "contributions": fields.Float(description="How many megapixelsteps the workers in this team have been rewarded while part of this team."),
@@ -133,6 +135,7 @@ class ImageModels(v2.Models):
         self.input_interrogate_request_generation = api.model('ModelInterrogationInputStable', {
             'forms': fields.List(fields.Nested(self.input_model_interrogation_form)),
             'source_image': fields.String(required=False, description="The public URL of the image to interrogate"),
+            'slow_workers': fields.Boolean(default=True,description="When True, allows slower workers to pick up this request. Disabling this incurs an extra kudos cost."),
         })
         self.response_model_interrogation = api.model('RequestInterrogationResponse', {
             'id': fields.String(description="The UUID of the request. Use this to retrieve the request status in the future"),
@@ -159,6 +162,7 @@ class ImageModels(v2.Models):
             'bridge_version': fields.Integer(default=1, description="The version of the bridge used by this worker"),
             'bridge_agent': fields.String(required=False, default="unknown", example="AI Horde Worker:11:https://github.com/db0/AI-Horde-Worker", description="The worker name, version and website", max_length=1000),
             'threads': fields.Integer(default=1, description="How many threads this worker is running. This is used to accurately the current power available in the horde",min=1, max=100),
+            'max_tiles': fields.Integer(default=16, description="The maximum amount of 512x512 tiles this worker can post-process", min=1, max=256), 
         })
         self.response_model_interrogation_pop_payload = api.model('InterrogationPopFormPayload', {
             'id': fields.String(description="The UUID of the interrogation form. Use this to post the results in the future"),

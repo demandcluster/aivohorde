@@ -100,8 +100,11 @@ class InterrogationForms(db.Model):
         cancel_txt = ""
         if self.state == State.CANCELLED:
             cancel_txt = " CANCELLED"
-        self.worker.record_interrogation(kudos = self.kudos, seconds_taken = (datetime.utcnow() - self.initiated).seconds)
-        self.interrogation.record_usage(kudos = self.kudos + 1)
+        self.worker.record_interrogation(kudos = self.kudos, seconds_taken = (datetime.utcnow() - self.initiated).total_seconds())
+        kudos_burn = 1
+        if self.interrogation.slow_workers:
+            kudos_burn += 1
+        self.interrogation.record_usage(kudos = self.kudos + kudos_burn)
         logger.info(f"New{cancel_txt} Form {self.id} ({self.name}) worth {self.kudos} kudos, delivered by worker: {self.worker.name} for interrogation {self.interrogation.id}")
 
 
@@ -152,7 +155,9 @@ class Interrogation(db.Model):
     user = db.relationship("User", back_populates="interrogations")
     ipaddr = db.Column(db.String(39))  # ipv6
     safe_ip = db.Column(db.Boolean, default=False, nullable=False)
-    trusted_workers = db.Column(db.Boolean, default=False, nullable=False)
+    trusted_workers = db.Column(db.Boolean, default=False, nullable=False, index=True)
+    slow_workers = db.Column(db.Boolean, default=False, nullable=False, index=True)
+    image_tiles = db.Column(db.Integer, default=1, nullable=False, index=True)
     # This is used so I know to delete up the image 30 mins after this request expires
     r2stored = db.Column(db.Boolean, default=False, nullable=False)
     expiry = db.Column(db.DateTime, default=get_expiry_date, index=True)
@@ -161,17 +166,16 @@ class Interrogation(db.Model):
     forms = db.relationship("InterrogationForms", back_populates="interrogation", cascade="all, delete-orphan")
 
 
-    def __init__(self, forms, *args, **kwargs):
+    def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         db.session.add(self)
         db.session.commit()
         self.extra_priority = self.user.kudos
-        self.set_forms(forms)
 
-
-    def set_source_image(self, source_image, r2stored):
+    def set_source_image(self, source_image, r2stored, image_tiles):
         self.source_image = source_image
         self.r2stored = r2stored
+        self.image_tiles = image_tiles
         if not r2stored:
             for form in self.forms:
                 self.check_cache(form, source_image)
@@ -207,8 +211,9 @@ class Interrogation(db.Model):
             # Interrogations are more intensive so they reward better
             if form["name"] == "interrogation":
                 kudos = 3
-            if form["name"] in KNOWN_POST_PROCESSORS:
-                kudos = 3
+            elif form["name"] in KNOWN_POST_PROCESSORS:
+                logger.debug(self.image_tiles)
+                kudos = self.image_tiles * 3
             form_entry = InterrogationForms(
                 name=form["name"],
                 payload=form.get("payload"),

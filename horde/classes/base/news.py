@@ -4,10 +4,76 @@ class News:
 
     HORDE_NEWS = [
         {
+            "date_published": "2023-05-14",
+            "newspiece": 
+                "The AI Horde has finally moved to the [hordelib](https://pypi.org/project/hordelib/) library. "
+                "Which is powered by the [ComfyUI](https://github.com/comfyanonymous/ComfyUI) inference backend. "
+                "[Read the Devlog](https://dbzer0.com/blog/the-ai-horde-worker-moves-to-a-completely-new-inference-backend/)!",
+            "tags": ["devlog", "backend", "Jug", "Tazlin", "dreamer", "alchemist"],
+            "importance": "Information",
+        },
+        {
+            "date_published": "2023-05-11",
+            "newspiece": 
+                "With the upcoming deployment of the [hordelib](https://pypi.org/project/hordelib/)-based worker"
+                "[Jug](https://github.com/jug-dev/) has looked into creating a more efficient model to determine generation kudos"
+                "instead of reusing the numbers I hallucinated one day."
+                "He used what we know best and we trained an explicit model to calculate kudos, based on the performance of his own GPU on the comfy branch"
+                "This new calculation should be much more accurate in terms of things like controlnet and resolution impact."
+                "The good news is that the new comfy branch this seems to reduce kudos costs for high resolutions accross the board."
+                "Note: Due to the current worker (based on nataili) being slightly lower quality at the benefit of speed, and thus getting a boost due to the new kudos model"
+                "We have implemented a 25% reduction for its rewards to bring it up to line with its actual performance.",
+            "tags": ["kudos", "dreamer", "Jug"],
+            "importance": "Workers",
+        },
+        {
+            "date_published": "2023-05-09",
+            "newspiece": 
+                "A new feature appeared on the Horde. "
+                "You can now create [API keys you can share with others](https://dbzer0.com/blog/key-sharing/) to use your own priority.",
+            "tags": ["apikey", "shared key"],
+            "importance": "Information",
+        },
+        {
+            "date_published": "2023-05-05",
+            "newspiece": 
+                "You can now run an AI Horde worker inside a docker container."
+                "http://ghcr.io/db0/ai-horde-worker:main"
+                "Our README [contains information on how to configure it](https://github.com/db0/AI-Horde-Worker/blob/main/README.md#docker)."
+                "All kudos to [Gus Puffy#8887](https://github.com/guspuffygit)",
+            "tags": ["docker", "dreamer"],
+            "importance": "Workers",
+        },
+        {
+            "date_published": "2023-04-23",
+            "newspiece": 
+                "The Command Line Interface for the AI Horde has now been extended to support Image Generation, Text Generation and Image Alchemy."
+                "It has been split into three files and is now available in its own repository: "
+                "https://github.com/db0/AI-Horde-CLI",
+            "tags": ["cli"],
+            "importance": "Information",
+        },
+        {
+            "date_published": "2023-04-16",
+            "newspiece": 
+                "The AI Horde has received its first patreon sponsorship "
+                "Many thanks to [pawkygame VR](https://discord.gg/Zbe63QTU9X) for their support!",
+            "tags": ["sponsor", "patreon"],
+            "importance": "Information",
+        },
+        {
+            "date_published": "2023-03-23",
+            "newspiece": 
+                "Inpainting is re-enabled that to the work of [ResidentChief](https://github.com/ResidentChief)! "
+                "Now also have support for multiple inpainting models.",
+            "tags": ["inpainting", "ResidentChief"],
+            "importance": "Information",
+        },
+        {
             "date_published": "2023-03-19",
             "newspiece": 
                 "The AI Horde Interrogator Worker has now been renamed to 'Alchemist' "
-                "The Horde alchemist can not run all the post-processors, along with all the interrogation forms. "
+                "The Horde alchemist can now run all the post-processors, along with all the interrogation forms. "
                 "This means that if you have an existing image you wish to face-fix or upscale, you can just do that "
                 "by requesting it via alchemy. "
                 "For now, the alchemist does not support extracting ControlNet intermediate images, but this will be coming soon. "
