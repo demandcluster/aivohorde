@@ -1,3 +1,5 @@
+# This is a private copy, goto https://aihorde.net for the original.
+
 # AI Horde
 
 A giant crowdsourced distributed cluster for AI Models. This software can support both Image and Text generation.
