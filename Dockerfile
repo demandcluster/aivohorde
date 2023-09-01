@@ -11,8 +11,7 @@ WORKDIR /app
 COPY . /app
 
 # Install the dependencies
-RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install --no-cache-dir --prefer-binary -r requirements.txt
+RUN pip install --no-cache-dir --prefer-binary -r requirements.txt
 
 # Set the environment variables
 ENV PROFILE=
