@@ -3,6 +3,63 @@ from datetime import datetime
 class News:
 
     HORDE_NEWS = [
+        # {
+        #     "date_published": "2023-08-25",
+        #     "newspiece": 
+        #         "Textual Inversions support has now been merged into the main worker branch! "
+        #         "Read the [devlog](https://dbzer0.com)",
+        #     "tags": ["devlog", "TI", "text2img"],
+        #     "importance": "Workers",
+        # },
+        {
+            "date_published": "2023-07-23",
+            "newspiece": 
+                "Join our [Lemmy Community](https://lemmy.dbzer0.com/c/aihorde).",
+            "tags": ["lemmy"],
+            "importance": "Information",
+        },
+        {
+            "date_published": "2023-07-04",
+            "newspiece": 
+                "New [State of the AI Horde](https://dbzer0.com/blog/state-of-the-ai-horde-july-2023/) is out!",
+            "tags": ["state of the ai horde"],
+            "importance": "Information",
+        },
+        {
+            "date_published": "2023-06-01",
+            "newspiece": 
+                "LoRas support has now been merged into the main worker branch! "
+                "All kudos to [Jug](https://github.com/jug-dev/) and [Tazlin](https://github.com/tazlin/) for their invaluable efforts! "
+                "Read the [devlog](https://dbzer0.com/blog/the-ai-horde-now-seamlessly-provides-all-civitai-loras/)",
+            "tags": ["devlog", "lora", "text2img"],
+            "importance": "Workers",
+        },
+        {
+            "date_published": "2023-05-30",
+            "newspiece": 
+                "Early support for LoRa has been added to the AI Horde with a few workers providing it. "
+                "UIs are still adding it, with [Lucid Creations](https://dbzer0.itch.io/lucid-creations/devlog/537949/1170-loras), ArtBot and the Krita plugin already supporting it."
+                "Try it out and let us know how it works for you.",
+            "tags": ["UI", "lora", "text2img"],
+            "importance": "Information",
+        },
+        {
+            "date_published": "2023-05-25",
+            "newspiece": 
+                "I wanted to point out a very cool voice-2-text-2-voice AI Horde integration: [ProtoReplicant](https://github.com/OpenReplicant/ProtoReplicant). "
+                "It converts your voice into text which it then sends to an LLM model, and finally converts the resulting text into voice and plays it back."
+                "Here's the new [Discord integration channel](https://discordapp.com/channels/781145214752129095/1111189841120596008)",
+            "tags": ["UI", "voice", "llm"],
+            "importance": "Integration",
+        },
+        {
+            "date_published": "2023-05-22",
+            "newspiece": 
+                "A new AI Horde integration has been created. A Telegram bot by the name of [Imaginarium](https://t.me/ImaginariumAIbot). "
+                "Here's the new [Discord integration channel](https://discordapp.com/channels/781145214752129095/1109825249933000714)",
+            "tags": ["bot", "telegram"],
+            "importance": "Integration",
+        },
         {
             "date_published": "2023-05-14",
             "newspiece": 
@@ -15,14 +72,14 @@ class News:
         {
             "date_published": "2023-05-11",
             "newspiece": 
-                "With the upcoming deployment of the [hordelib](https://pypi.org/project/hordelib/)-based worker"
-                "[Jug](https://github.com/jug-dev/) has looked into creating a more efficient model to determine generation kudos"
-                "instead of reusing the numbers I hallucinated one day."
-                "He used what we know best and we trained an explicit model to calculate kudos, based on the performance of his own GPU on the comfy branch"
-                "This new calculation should be much more accurate in terms of things like controlnet and resolution impact."
-                "The good news is that the new comfy branch this seems to reduce kudos costs for high resolutions accross the board."
-                "Note: Due to the current worker (based on nataili) being slightly lower quality at the benefit of speed, and thus getting a boost due to the new kudos model"
-                "We have implemented a 25% reduction for its rewards to bring it up to line with its actual performance.",
+                "With the upcoming deployment of the [hordelib](https://pypi.org/project/hordelib/)-based worker. "
+                "[Jug](https://github.com/jug-dev/) has looked into creating a more efficient model to determine generation kudos "
+                "instead of reusing the numbers I hallucinated one day. "
+                "He used what we know best and we trained an explicit model to calculate kudos, based on the performance of his own GPU on the comfy branch "
+                "This new calculation should be much more accurate in terms of things like controlnet and resolution impact. "
+                "The good news is that the new comfy branch this seems to reduce kudos costs for high resolutions accross the board. "
+                "Note: Due to the current worker (based on nataili) being slightly lower quality at the benefit of speed, and thus getting a boost due to the new kudos model, "
+                "we have implemented a 25% reduction for its rewards to bring it up to line with its actual performance.",
             "tags": ["kudos", "dreamer", "Jug"],
             "importance": "Workers",
         },
@@ -37,9 +94,9 @@ class News:
         {
             "date_published": "2023-05-05",
             "newspiece": 
-                "You can now run an AI Horde worker inside a docker container."
-                "http://ghcr.io/db0/ai-horde-worker:main"
-                "Our README [contains information on how to configure it](https://github.com/db0/AI-Horde-Worker/blob/main/README.md#docker)."
+                "You can now run an AI Horde worker inside a docker container. "
+                "http://ghcr.io/db0/ai-horde-worker:main "
+                "Our README [contains information on how to configure it](https://github.com/db0/AI-Horde-Worker/blob/main/README.md#docker) "
                 "All kudos to [Gus Puffy#8887](https://github.com/guspuffygit)",
             "tags": ["docker", "dreamer"],
             "importance": "Workers",
@@ -47,7 +104,7 @@ class News:
         {
             "date_published": "2023-04-23",
             "newspiece": 
-                "The Command Line Interface for the AI Horde has now been extended to support Image Generation, Text Generation and Image Alchemy."
+                "The Command Line Interface for the AI Horde has now been extended to support Image Generation, Text Generation and Image Alchemy. "
                 "It has been split into three files and is now available in its own repository: "
                 "https://github.com/db0/AI-Horde-CLI",
             "tags": ["cli"],

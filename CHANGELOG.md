@@ -1,5 +1,111 @@
 # Changelog
 
+# 4.18.0
+
+* Added support for TIs in payloads for SD
+
+# 4.17.8
+
+* Changed returned kudos amounts to be a float
+* Returned kudos amounts are rounded
+* Fixed shared keys with -1 kudos not being let through.
+
+# 4.17.7
+
+* Tweaked dry-run to be slightly more accurate
+* Model EtA now takes threads into account
+
+# 4.17.5-6
+
+* Fixes the performance caching issue
+
+# 4.17.4
+
+* Set the Scribe kudos baseline to 4bit. 
+* Added kudos consumption multiplier based on context size
+
+# 4.17.3
+
+* Added some extra rewards to non-trusted alchemists due to the low amount of work atm
+
+# 4.17.2
+
+Yet another fix for the duplicate images in SDXL. Hopefully I got it now
+
+# 4.17.1
+
+Another attempt to prevent SDXL duplicates via race conditions
+
+# 4.17.0
+
+Enabled SDXL_beta model
+
+# 4.16.3
+
+Working being paused due to suspicion will now inform moderators via a discord webhook
+
+# 4.16.2
+
+Consider emojis when checking for CSAM potential
+
+# 4.16.1
+
+Fix for duplicate seeds and extra gens
+
+# 4.16.0
+
+Shared keys can now set max pixels, max tokens, and max steps to use
+
+# 4.15.10
+
+* Cancelled requests will now always report done, even if procgens are still waiting
+
+# 4.15.9
+
+* Hide special models from general list
+* Don't record special model stats
+
+# 4.15.8
+
+* Allow seeing individual model stats
+
+# 4.15.7
+
+Support for special models and users
+
+# 4.15.6
+
+* Added 1 kudos extra per lora
+* Added 30 kudos extra uptime reward for serving loras
+
+# 4.15.5
+
+Fixed worker blacklist
+
+# 4.15.4
+
+Avoid null inject_trigger in loras
+
+# 4.15.3
+
+Support lora's `inject_trigger`
+
+# 4.15.2
+
+* Prevents more than 5 loras per image
+* display VPN role
+* Allows scribes to send empty string as results
+* Using VPN shouldn't keep increasing a user's suspicion endlessly.
+
+# 4.15.1
+
+* Removed "soft_prompt" from the payload to Scribes as it's sent elsewhere.
+
+# 4.15.0
+
+* Added support for LoRas in payloads for SD
+* Improved retrieval filtering
+
 # 4.14.0
 
 - Enabled NN-model based kudos-calculation

@@ -7,7 +7,7 @@ from sqlalchemy import func, or_, and_
 from sqlalchemy.exc import DataError
 from sqlalchemy.orm import noload, joinedload, load_only
 
-from horde.classes.base.waiting_prompt import WPModels
+from horde.classes.base.waiting_prompt import WPModels, WPAllowedWorkers
 from horde.classes.base.worker import WorkerModel
 from horde.flask import db, SQLITE_MODE
 from horde.logger import logger
@@ -37,18 +37,21 @@ def convert_things_to_kudos(things, **kwargs):
 
 
 def get_sorted_text_wp_filtered_to_worker(
-    worker, models_list=None, priority_user_ids=None
+    worker, models_list=None, priority_user_ids=None, page=0
 ):
     # This is just the top 100 - Adjusted method to send Worker object. Filters to add.
-    # TODO: Ensure the procgen table is NOT retrieved along with WPs (because it contains images)
     # TODO: Filter by (Worker in WP.workers) __ONLY IF__ len(WP.workers) >=1
     # TODO: Filter by WP.trusted_workers == False __ONLY IF__ Worker.user.trusted == False
     # TODO: Filter by Worker not in WP.tricked_worker
     # TODO: If any word in the prompt is in the WP.blacklist rows, then exclude it (L293 in base.worker.Worker.gan_generate())
+    PER_PAGE = 3  # how many requests we're picking up to filter further
     final_wp_list = (
         db.session.query(TextWaitingPrompt)
         .options(noload(TextWaitingPrompt.processing_gens))
-        .outerjoin(WPModels)
+        .outerjoin(
+            WPModels,
+            WPAllowedWorkers,
+        )
         .filter(
             TextWaitingPrompt.n > 0,
             TextWaitingPrompt.max_length <= worker.max_length,
@@ -58,25 +61,34 @@ def get_sorted_text_wp_filtered_to_worker(
             TextWaitingPrompt.expiry > datetime.utcnow(),
             or_(
                 TextWaitingPrompt.safe_ip == True,
-                and_(
-                    TextWaitingPrompt.safe_ip == False,
-                    worker.allow_unsafe_ipaddr == True,
-                ),
+                worker.allow_unsafe_ipaddr == True,
             ),
             or_(
                 TextWaitingPrompt.nsfw == False,
-                and_(
-                    TextWaitingPrompt.nsfw == True,
-                    worker.nsfw == True,
-                ),
+                worker.nsfw == True,
             ),
             or_(
                 WPModels.model.in_(models_list),
                 WPModels.id.is_(None),
             ),
             or_(
+                WPAllowedWorkers.id.is_(None),
+                and_(
+                    TextWaitingPrompt.worker_blacklist.is_(False),
+                    WPAllowedWorkers.worker_id == worker.id,
+                ),
+                and_(
+                    TextWaitingPrompt.worker_blacklist.is_(True),
+                    WPAllowedWorkers.worker_id != worker.id,
+                ),
+            ),
+            or_(
                 worker.speed >= 2,  # 2 tokens/s
                 TextWaitingPrompt.slow_workers == True,
+            ),
+            or_(
+                worker.maintenance == False,
+                TextWaitingPrompt.user_id == worker.user_id,
             ),
         )
     )
@@ -85,11 +97,19 @@ def get_sorted_text_wp_filtered_to_worker(
             TextWaitingPrompt.user_id.in_(priority_user_ids)
         )
     # logger.debug(final_wp_list)
-    final_wp_list = final_wp_list.order_by(
-        TextWaitingPrompt.extra_priority.desc(), TextWaitingPrompt.created.asc()
-    ).limit(50)
+    final_wp_list = (
+        final_wp_list.order_by(
+            TextWaitingPrompt.extra_priority.desc(), TextWaitingPrompt.created.asc()
+        )
+        .offset(PER_PAGE * page)
+        .limit(PER_PAGE)
+    )
     # logger.debug(final_wp_list.all())
-    return final_wp_list.all()
+    return (
+        final_wp_list.populate_existing()
+        .with_for_update(skip_locked=True, of=TextWaitingPrompt)
+        .all()
+    )
 
 
 def get_text_wp_by_id(wp_id, lite=False):

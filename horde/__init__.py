@@ -28,7 +28,7 @@ def after_request(response):
     ] = "POST, GET, OPTIONS, PUT, DELETE, PATCH"
     response.headers[
         "Access-Control-Allow-Headers"
-    ] = "Accept, Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, apikey, Client-Agent"
+    ] = "Accept, Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, apikey, Client-Agent, X-Fields"
     response.headers[
         "Horde-Node"
     ] = f"{socket.gethostname()}:{args.port}:{HORDE_VERSION}"
@@ -72,6 +72,17 @@ HORDE.register_blueprint(github_blueprint, url_prefix="/github")
 #     redirect_url='/finish_dance',
 # )
 # HORDE.register_blueprint(patreon_blueprint, url_prefix="/patreon")
+
+
+if args.force_patreon:
+    from horde.ops import force_patreon_kudos
+
+    logger.info(f"focing kudos on user_id: {args.force_patreon}")
+    force_patreon_kudos(args.force_patreon, args.prevent_date_change)
+    import sys
+
+    sys.exit()
+
 
 if args.test:
     import horde.sandbox

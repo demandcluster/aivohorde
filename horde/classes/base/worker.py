@@ -13,6 +13,7 @@ from horde.suspicions import SUSPICION_LOGS, Suspicions
 from horde.utils import is_profane, get_db_uuid, sanitize_string
 from horde import horde_redis as hr
 from horde.classes.base import settings
+from horde.discord import send_pause_notification
 
 
 uuid_column_type = lambda: UUID(as_uuid=True) if not SQLITE_MODE else db.String(36)
@@ -189,7 +190,7 @@ class WorkerTemplate(db.Model):
         # Each worker starts at the suspicion level of its user
         if len(self.name) > 100:
             if len(self.name) > 200:
-                self.report_suspicion(reason=Suspicions.WORKER_NAME_EXTREMELY_LONG)
+                self.report_suspicion(reason=Suspicions.WORKER_NAME_EXTREME)
             self.name = self.name[:100]
             self.report_suspicion(reason=Suspicions.WORKER_NAME_LONG)
         if is_profane(self.name):
@@ -203,10 +204,11 @@ class WorkerTemplate(db.Model):
         if not formats:
             formats = []
         # Unreasonable Fast can be added multiple times and it increases suspicion each time
-        if int(reason) in self.suspicions and reason not in [
-            Suspicions.UNREASONABLY_FAST,
-            Suspicions.TOO_MANY_JOBS_ABORTED,
-        ]:
+        if (
+            reason
+            not in [Suspicions.UNREASONABLY_FAST, Suspicions.TOO_MANY_JOBS_ABORTED]
+            and int(reason) in self.get_suspicion_reasons()
+        ):
             return
         new_suspicion = WorkerSuspicions(worker_id=self.id, suspicion_id=int(reason))
         db.session.add(new_suspicion)
@@ -216,9 +218,17 @@ class WorkerTemplate(db.Model):
             logger.warning(
                 f"Worker '{self.id}' suspicion increased. Reason: {reason_log}"
             )
-        if self.is_suspicious():
+        if self.is_suspicious() and not self.paused:
             self.paused = True
+            send_pause_notification(
+                f"Worker {self.name} ({self.id}) automatically set to paused.\n"
+                f"Last suspicion log: {reason.name}.\n"
+                f"Total Suspicion {self.get_suspicion()}"
+            )
         db.session.commit()
+
+    def get_suspicion_reasons(self):
+        return set([s.suspicion_id for s in self.suspicions])
 
     def reset_suspicion(self):
         """Clears the worker's suspicion and resets their reasons"""
@@ -291,9 +301,8 @@ class WorkerTemplate(db.Model):
         # If's OK to provide an empty list here as we don't actually modify this var
         # We only check it in can_generate
         self.prioritized_users = kwargs.get("prioritized_users", [])
-        if not kwargs.get("safe_ip", True):
-            if not self.user.trusted:
-                self.report_suspicion(reason=Suspicions.UNSAFE_IP)
+        if not kwargs.get("safe_ip", True) and not self.user.trusted:
+            self.report_suspicion(reason=Suspicions.UNSAFE_IP)
         if not self.is_stale() and not self.paused and not self.maintenance:
             self.uptime += (datetime.utcnow() - self.last_check_in).total_seconds()
             # Every 10 minutes of uptime gets 100 kudos rewarded
@@ -409,6 +418,9 @@ class WorkerTemplate(db.Model):
         dropped_job_threshold = 20
         if settings.mode_raid():
             dropped_job_threshold = 10
+        # Avoid putting stability.ai into maintenance until I figure out why I'm getting wrong payloads
+        if self.user.id == 6901:
+            dropped_job_threshold = 100
         # Avoiding putting into maintenance interrogation workers due to crashes from the model
         # TODO: Remove once crashes are fixed
         if self.worker_type == "interrogation_worker":

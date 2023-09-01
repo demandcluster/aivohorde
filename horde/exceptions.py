@@ -207,7 +207,7 @@ class WorkerInviteOnly(wze.Forbidden):
 
 class UnsafeIP(wze.Forbidden):
     def __init__(self, ipaddr):
-        self.specific = f"Due to abuse prevention, we cannot accept more workers from your IP address. Please contact us on Discord if you feel this is a mistake."
+        self.specific = f"Due to abuse prevention, we cannot accept more workers from VPNs. Please contact us on Discord if you feel this is a mistake."
         self.log = f"Worker attempted to pop from unsafe IP: {ipaddr}"
 
 
@@ -247,7 +247,7 @@ class RequestNotFound(wze.NotFound):
     ):
         self.specific = f"{request_type} with ID '{req_id}' not found."
         if request_type != "Interrogation":  # FIXME: Figure out why there's so many
-            self.log = f"Status of {request_type} with ID '{req_id}' does not exist. Client agent: {client_agent}@{ipaddr}"
+            self.log = f"{request_type} with ID '{req_id}' does not exist. Client agent: {client_agent}@{ipaddr}"
         else:
             self.log = None
 

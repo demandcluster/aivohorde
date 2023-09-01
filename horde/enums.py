@@ -30,3 +30,4 @@ class UserRoleTypes(enum.Enum):
     FLAGGED = 3
     CUSTOMIZER = 4
     VPN = 5
+    SPECIAL = 6

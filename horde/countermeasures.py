@@ -11,10 +11,10 @@ from horde.redis_ctrl import (
     get_ipaddr_timeout_db,
 )
 from datetime import timedelta
-
-from horde.consts import WHITELISTED_SERVICE_IPS
+from horde.consts import WHITELISTED_SERVICE_IPS, WHITELISTED_VPN_IPS
 
 ip_r = None
+logger.init("IP Address Cache", status="Connecting")
 if is_redis_up():
     ip_r = get_ipaddr_db()
     logger.init_ok("IP Address Cache", status="Connected")
@@ -42,7 +42,7 @@ class CounterMeasures:
     @staticmethod
     def set_safe(ipaddr, is_safe):
         """Stores the safety of the IP in redis temporarily"""
-        ip_r.setex(ipaddr, timedelta(hours=48), int(is_safe))
+        ip_r.setex(ipaddr, timedelta(hours=6), int(is_safe))
         return is_safe
 
     @staticmethod
@@ -90,7 +90,7 @@ class CounterMeasures:
                         ipaddr, True
                     )  # True until I can improve my load
                     logger.error(
-                        f"An error occured while validating IP. Return Code: {result.text}"
+                        f"An error occurred while validating IP. Return Code: {result.text}"
                     )
             else:
                 probability = float(result.content)

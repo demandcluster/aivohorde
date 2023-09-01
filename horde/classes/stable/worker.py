@@ -24,6 +24,7 @@ class ImageWorker(Worker):
     allow_painting = db.Column(db.Boolean, default=True, nullable=False)
     allow_post_processing = db.Column(db.Boolean, default=True, nullable=False)
     allow_controlnet = db.Column(db.Boolean, default=False, nullable=False)
+    allow_lora = db.Column(db.Boolean, default=False, nullable=False)
     wtype = "image"
 
     def check_in(self, max_pixels, **kwargs):
@@ -36,6 +37,7 @@ class ImageWorker(Worker):
         self.allow_painting = kwargs.get("allow_painting", True)
         self.allow_post_processing = kwargs.get("allow_post_processing", True)
         self.allow_controlnet = kwargs.get("allow_controlnet", False)
+        self.allow_lora = kwargs.get("allow_lora", False)
         if len(self.get_model_names()) == 0:
             self.set_models(["stable_diffusion"])
         paused_string = ""
@@ -47,7 +49,10 @@ class ImageWorker(Worker):
         )
 
     def calculate_uptime_reward(self):
-        return 50 + (len(self.get_model_names()) * 2)
+        baseline = 50 + (len(self.get_model_names()) * 2)
+        if self.allow_lora:
+            baseline += 30
+        return baseline
 
     def can_generate(self, waiting_prompt):
         can_generate = super().can_generate(waiting_prompt)
@@ -86,11 +91,9 @@ class ImageWorker(Worker):
                 "post_processing", []
             ) and not check_bridge_capability(pp, self.bridge_agent):
                 return [False, "bridge_version"]
-        # logger.warning(datetime.utcnow())
         if waiting_prompt.source_image and not self.allow_img2img:
             return [False, "img2img"]
         # Prevent txt2img requests being sent to "stable_diffusion_inpainting" workers
-        # logger.warning(datetime.utcnow())
         if not waiting_prompt.source_image and (
             self.models == ["stable_diffusion_inpainting"]
             or waiting_prompt.models == ["stable_diffusion_inpainting"]
@@ -107,6 +110,8 @@ class ImageWorker(Worker):
         if waiting_prompt.params.get("control_type"):
             if not check_bridge_capability("controlnet", self.bridge_agent):
                 return [False, "bridge_version"]
+            if not check_bridge_capability("image_is_control", self.bridge_agent):
+                return [False, "bridge_version"]
             if not self.allow_controlnet:
                 return [False, "bridge_version"]
         if waiting_prompt.params.get("hires_fix") and not check_bridge_capability(
@@ -117,10 +122,8 @@ class ImageWorker(Worker):
             "clip_skip", 1
         ) > 1 and not check_bridge_capability("clip_skip", self.bridge_agent):
             return [False, "bridge_version"]
-        # logger.warning(datetime.utcnow())
         if waiting_prompt.source_processing != "img2img" and not self.allow_painting:
             return [False, "painting"]
-        # logger.warning(datetime.utcnow())
         if not waiting_prompt.safe_ip and not self.allow_unsafe_ipaddr:
             return [False, "unsafe_ip"]
         # We do not give untrusted workers anon or VPN generations, to avoid anything slipping by and spooking them.
@@ -164,6 +167,7 @@ class ImageWorker(Worker):
         ret_dict["painting"] = allow_painting
         ret_dict["post-processing"] = self.allow_post_processing
         ret_dict["controlnet"] = self.allow_controlnet
+        ret_dict["lora"] = self.allow_lora
         return ret_dict
 
     def parse_models(self, unchecked_models):
@@ -171,7 +175,13 @@ class ImageWorker(Worker):
         del unchecked_models[300:]
         models = set()
         for model in unchecked_models:
-            if model in model_reference.stable_diffusion_names:
+            usermodel = model.split("::")
+            if self.user.special and len(usermodel) == 2:
+                user_alias = usermodel[1]
+                if self.user.get_unique_alias() != user_alias:
+                    raise e.BadRequest(f"This model can only be hosted by {user_alias}")
+                models.add(model)
+            elif model in model_reference.stable_diffusion_names:
                 models.add(model)
             elif self.user.customizer:
                 models.add(model)

@@ -1,10 +1,14 @@
 # AI Horde
 
-A giant crowdsourced distributed cluster for AI Models. This software can support both Image and Text generation.
-It allows people without a powerful GPU to use Stable Diffusion or Text generation models like GPT/OPT by relying on spare/idle resources provided by the community.
+A massive crowdsourced distributed inference cluster for AI Models. This software can support both Image and Text generation.
+It allows people without a powerful GPU to use Stable Diffusion or Large Language Models like Pygmalion/Llama by relying on spare/idle resources provided by the community.
 It also allows non-python clients, such as games and apps, to use AI-provided generations.
 
 For more questions, check the [FAQ](FAQ.md)
+
+# Sponsored by
+
+[![stability.ai](assets/stability.ai.png)](https://stability.ai) [![tensorplay.ai](assets/TensorPlay.ai.png)](https://tensorplay.ai)
 
 # Registering
 
@@ -27,6 +31,14 @@ If you do not want to login even with a pseudonymous account, you can use this s
 
 The point of registering is to track your usage and your contributions. The more you contribute to the Horde, the more priority you have. [Read about this here](https://dbzer0.com/blog/the-kudos-based-economy-for-the-koboldai-horde/)
 
+## REST API
+
+We provide a fully open REST API for all Generative AI functions we support.
+
+[Complete Documentation](https://aihorde.net/api).
+
+![](api_screenshot.png)
+
 # Community
 
 If you have any questions or feedback, we have a vibrant community on [discord](https://discord.gg/3DxrhksKzn)
@@ -37,3 +49,4 @@ Please see the individual readmes for each specific mode supported by the AI Hor
 
 - [Image generation Readme](README_StableHorde.md)
 - [Text generation Readme](README_KoboldAIHorde.md)
+- [Docker Readme](README_docker.md)

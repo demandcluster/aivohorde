@@ -73,6 +73,19 @@ arg_parser.add_argument(
 arg_parser.add_argument(
     "--disable_filters", action="store_true", help="Testing filter work"
 )
+arg_parser.add_argument(
+    "--force_patreon",
+    action="store",
+    required=False,
+    type=int,
+    help="Provide a patreon username to force to kudos push patreon rewards",
+)
+arg_parser.add_argument(
+    "--prevent_date_change",
+    action="store_true",
+    required=False,
+    help="If true will prevent changing the reward date when forcing patreon rewards.",
+)
 arg_parser.add_argument("--test", action="store_true", help="Test")
 arg_parser.add_argument(
     "--color", default=False, action="store_true", help="Enabled colorized logs"

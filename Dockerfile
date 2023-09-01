@@ -1,13 +1,24 @@
-# syntax=docker/dockerfile:1
+# Use a slim base image for Python 3.10
+FROM python:3.10-slim
 
-FROM python:3.8-slim-buster
+# Install Git
+RUN apt-get update && apt-get install -y git
 
+# Set the working directory
 WORKDIR /app
 
-COPY requirements.txt requirements.txt
-RUN apt-get update && apt-get install -y git
-RUN pip install -r requirements.txt
-COPY . .
-# 
-# python3 server.py --allow_all_ips -i -v --horde kobold
-CMD [ "python3", "server.py", "--allow_all_ips", "-i","-v", "--horde", "stable","--quorum"]
+# Copy the source code to the container
+COPY . /app
+
+# Install the dependencies
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --no-cache-dir --prefer-binary -r requirements.txt
+
+# Set the environment variables
+ENV PROFILE=
+
+# Set the command to run when the container starts
+CMD ["python", "server.py", "-vvvvi", "--horde", "stable"]
+
+# Expose the port
+EXPOSE 7001

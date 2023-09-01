@@ -8,7 +8,7 @@ class Parsers:
             "apikey",
             type=str,
             required=True,
-            help="The API Key corresponding to a registered user",
+            help="The API Key corresponding to a registered user.",
             location="headers",
         )
         self.generate_parser.add_argument(
@@ -23,14 +23,14 @@ class Parsers:
             "prompt",
             type=str,
             required=True,
-            help="The prompt to generate from",
+            help="The prompt to generate from.",
             location="json",
         )
         self.generate_parser.add_argument(
             "params",
             type=dict,
             required=False,
-            help="Extra generate params to send to the worker",
+            help="Extra generate params to send to the worker.",
             location="json",
         )
         self.generate_parser.add_argument(
@@ -45,7 +45,7 @@ class Parsers:
             "workers",
             type=list,
             required=False,
-            help="If specified, only the worker with this ID will be able to generate this prompt",
+            help="If specified, only the worker with this ID will be able to generate this prompt.",
             location="json",
         )
         self.generate_parser.add_argument(
@@ -87,21 +87,21 @@ class Parsers:
             "apikey",
             type=str,
             required=True,
-            help="The API Key corresponding to a registered user",
+            help="The API Key corresponding to a registered user.",
             location="headers",
         )
         self.job_pop_parser.add_argument(
             "name",
             type=str,
             required=True,
-            help="The worker's unique name, to track contributions",
+            help="The worker's unique name, to track contributions.",
             location="json",
         )
         self.job_pop_parser.add_argument(
             "priority_usernames",
             type=list,
             required=False,
-            help="The usernames which get priority use on this worker",
+            help="The usernames which get priority use on this worker.",
             location="json",
         )
         self.job_pop_parser.add_argument(
@@ -109,14 +109,14 @@ class Parsers:
             type=bool,
             default=True,
             required=False,
-            help="Marks that this worker is capable of generating NSFW content",
+            help="Marks that this worker is capable of generating NSFW content.",
             location="json",
         )
         self.job_pop_parser.add_argument(
             "models",
             type=list,
             required=False,
-            help="The models currently available on this worker",
+            help="The models currently available on this worker.",
             location="json",
         )
         self.job_pop_parser.add_argument(
@@ -124,7 +124,7 @@ class Parsers:
             type=int,
             required=False,
             default=1,
-            help="Specify the version of the worker bridge, as that can modify the way the arguments are being sent",
+            help="Specify the version of the worker bridge, as that can modify the way the arguments are being sent.",
             location="json",
         )
         self.job_pop_parser.add_argument(
@@ -139,7 +139,7 @@ class Parsers:
             type=int,
             required=False,
             default=1,
-            help="How many threads this worker is running. This is used to accurately the current power available in the horde",
+            help="How many threads this worker is running. This is used to accurately the current power available in the horde.",
             location="json",
         )
         self.job_pop_parser.add_argument(
@@ -156,21 +156,21 @@ class Parsers:
             "apikey",
             type=str,
             required=True,
-            help="The worker's owner API key",
+            help="The worker's owner API key.",
             location="headers",
         )
         self.job_submit_parser.add_argument(
             "id",
             type=str,
             required=True,
-            help="The processing generation uuid",
+            help="The processing generation uuid.",
             location="json",
         )
         self.job_submit_parser.add_argument(
             "generation",
             type=str,
             required=True,
-            help="The generated output",
+            help="The generated output.",
             location="json",
         )
         self.job_submit_parser.add_argument(
@@ -189,16 +189,16 @@ class Models:
             "RequestStatusCheck",
             {
                 "finished": fields.Integer(
-                    description="The amount of finished jobs in this request"
+                    description="The amount of finished jobs in this request."
                 ),
                 "processing": fields.Integer(
-                    description="The amount of still processing jobs in this request"
+                    description="The amount of still processing jobs in this request."
                 ),
                 "restarted": fields.Integer(
-                    description="The amount of jobs that timed out and had to be restarted or were reported as failed by a worker"
+                    description="The amount of jobs that timed out and had to be restarted or were reported as failed by a worker."
                 ),
                 "waiting": fields.Integer(
-                    description="The amount of jobs waiting to be picked up by a worker"
+                    description="The amount of jobs waiting to be picked up by a worker."
                 ),
                 "done": fields.Boolean(
                     description="True when all jobs in this request are done. Else False."
@@ -208,7 +208,7 @@ class Models:
                     description="True when this request caused an internal server error and could not be completed.",
                 ),
                 "wait_time": fields.Integer(
-                    description="The expected amount to wait (in seconds) to generate all jobs in this request"
+                    description="The expected amount to wait (in seconds) to generate all jobs in this request."
                 ),
                 "queue_position": fields.Integer(
                     description="The position in the requests queue. This position is determined by relative Kudos amounts."
@@ -218,7 +218,7 @@ class Models:
                 ),
                 "is_possible": fields.Boolean(
                     default=True,
-                    description="If False, this request will not be able to be completed with the pool of workers currently available",
+                    description="If False, this request will not be able to be completed with the pool of workers currently available.",
                 ),
             },
         )
@@ -260,15 +260,15 @@ class Models:
             {
                 "worker_id": fields.String(
                     title="Worker ID",
-                    description="The UUID of the worker which generated this image",
+                    description="The UUID of the worker which generated this image.",
                 ),
                 "worker_name": fields.String(
                     title="Worker Name",
-                    description="The name of the worker which generated this image",
+                    description="The name of the worker which generated this image.",
                 ),
                 "model": fields.String(
                     title="Generation Model",
-                    description="The model which generated this image",
+                    description="The model which generated this image.",
                 ),
                 "state": fields.String(
                     title="Generation State",
@@ -292,14 +292,14 @@ class Models:
             "RequestAsync",
             {
                 "id": fields.String(
-                    description="The UUID of the request. Use this to retrieve the request status in the future"
+                    description="The UUID of the request. Use this to retrieve the request status in the future."
                 ),
-                "kudos": fields.Integer(
+                "kudos": fields.Float(
                     description="The expected kudos consumption for this request."
                 ),
                 "message": fields.String(
                     default=None,
-                    description="Any extra information from the horde about this request",
+                    description="Any extra information from the horde about this request.",
                 ),
             },
         )
@@ -310,10 +310,10 @@ class Models:
                     description="The prompt which will be sent to the horde against which to run inference."
                 ),
                 "n": fields.Integer(
-                    example=1, description="The amount of images to generate"
+                    example=1, description="The amount of images to generate."
                 ),
                 "seed": fields.String(
-                    description="The seed to use to generete this request"
+                    description="The seed to use to generete this request."
                 ),
             },
         )
@@ -321,11 +321,11 @@ class Models:
             "NoValidRequestFound",
             {
                 "worker_id": fields.Integer(
-                    description="How many waiting requests were skipped because they demanded a specific worker",
+                    description="How many waiting requests were skipped because they demanded a specific worker.",
                     min=0,
                 ),
                 "performance": fields.Integer(
-                    description="How many waiting requests were skipped because they required higher performance",
+                    description="How many waiting requests were skipped because they required higher performance.",
                     min=0,
                 ),
                 "nsfw": fields.Integer(
@@ -350,6 +350,9 @@ class Models:
                     description="How many waiting requests were skipped because they require a higher version of the bridge than this worker is running (upgrade if you see this in your skipped list).",
                     min=0,
                 ),
+                "kudos": fields.Integer(
+                    description="How many waiting requests were skipped because the user didn't have enough kudos when this worker requires upfront kudos."
+                ),
             },
         )
 
@@ -359,7 +362,7 @@ class Models:
                 "payload": fields.Nested(
                     self.response_model_generation_payload, skip_none=True
                 ),
-                "id": fields.String(description="The UUID for this generation"),
+                "id": fields.String(description="The UUID for this generation."),
                 "skipped": fields.Nested(
                     self.response_model_generations_skipped, skip_none=True
                 ),
@@ -370,7 +373,7 @@ class Models:
             {
                 "id": fields.String(
                     required=True,
-                    description="The UUID of this generation",
+                    description="The UUID of this generation.",
                     example="00000000-0000-0000-0000-000000000000",
                 ),
                 "generation": fields.String(
@@ -392,7 +395,7 @@ class Models:
             {
                 "reward": fields.Float(
                     example=10.0,
-                    description="The amount of kudos gained for submitting this request",
+                    description="The amount of kudos gained for submitting this request.",
                 ),
             },
         )
@@ -400,16 +403,16 @@ class Models:
         self.response_model_kudos_transfer = api.model(
             "KudosTransferred",
             {
-                "transferred": fields.Integer(
-                    example=100, description="The amount of Kudos tranferred"
+                "transferred": fields.Float(
+                    example=100, description="The amount of Kudos tranferred."
                 ),
             },
         )
         self.response_model_kudos_award = api.model(
             "KudosAwarded",
             {
-                "awarded": fields.Integer(
-                    example=100, description="The amount of Kudos awarded"
+                "awarded": fields.Float(
+                    example=100, description="The amount of Kudos awarded."
                 ),
             },
         )
@@ -418,7 +421,7 @@ class Models:
             "MaintenanceModeSet",
             {
                 "maintenance_mode": fields.Boolean(
-                    example=True, description="The current state of maintenance_mode"
+                    example=True, description="The current state of maintenance_mode."
                 ),
             },
         )
@@ -427,19 +430,19 @@ class Models:
             "WorkerKudosDetails",
             {
                 "generated": fields.Float(
-                    description="How much Kudos this worker has received for generating images"
+                    description="How much Kudos this worker has received for generating images."
                 ),
                 "uptime": fields.Integer(
-                    description="How much Kudos this worker has received for staying online longer"
+                    description="How much Kudos this worker has received for staying online longer."
                 ),
             },
         )
         self.input_model_job_pop = api.model(
             "PopInput",
             {
-                "name": fields.String(description="The Name of the Worker"),
+                "name": fields.String(description="The Name of the Worker."),
                 "priority_usernames": fields.List(
-                    fields.String(description="Users with priority to use this worker")
+                    fields.String(description="Users with priority to use this worker.")
                 ),
                 "nsfw": fields.Boolean(
                     default=False,
@@ -447,25 +450,25 @@ class Models:
                 ),
                 "models": fields.List(
                     fields.String(
-                        description="Which models this worker is serving",
+                        description="Which models this worker is serving.",
                         min_length=3,
                         max_length=255,
                     )
                 ),
                 "bridge_version": fields.Integer(
                     default=1,
-                    description="The version of the bridge used by this worker",
+                    description="The version of the bridge used by this worker.",
                 ),
                 "bridge_agent": fields.String(
                     required=False,
                     default="unknown:0:unknown",
                     example="AI Horde Worker:11:https://github.com/db0/AI-Horde-Worker",
-                    description="The worker name, version and website",
+                    description="The worker name, version and website.",
                     max_length=1000,
                 ),
                 "threads": fields.Integer(
                     default=1,
-                    description="How many threads this worker is running. This is used to accurately the current power available in the horde",
+                    description="How many threads this worker is running. This is used to accurately the current power available in the horde.",
                     min=1,
                     max=10,
                 ),
@@ -500,7 +503,7 @@ class Models:
                 ),
                 "maintenance_mode": fields.Boolean(
                     example=False,
-                    description="When True, this worker will not pick up any new requests",
+                    description="When True, this worker will not pick up any new requests.",
                 ),
                 "paused": fields.Boolean(
                     example=False,
@@ -527,14 +530,17 @@ class Models:
                 ),
                 "suspicious": fields.Integer(
                     example=0,
-                    description="(Privileged) How much suspicion this worker has accumulated",
+                    description="(Privileged) How much suspicion this worker has accumulated.",
                 ),
                 "uncompleted_jobs": fields.Integer(
                     example=0,
                     description="How many jobs this worker has left uncompleted after it started them.",
                 ),
                 "models": fields.List(
-                    fields.String(description="Which models this worker if offerring")
+                    fields.String(description="Which models this worker if offering.")
+                ),
+                "forms": fields.List(
+                    fields.String(description="Which forms this worker if offering.")
                 ),
                 "team": fields.Nested(
                     self.response_model_team_details_lite,
@@ -550,15 +556,15 @@ class Models:
                     required=True,
                     default="unknown:0:unknown",
                     example="AI Horde Worker:11:https://github.com/db0/AI-Horde-Worker",
-                    description="The bridge agent name, version and website",
+                    description="The bridge agent name, version and website.",
                     max_length=1000,
                 ),
                 "max_pixels": fields.Integer(
                     example=262144,
-                    description="The maximum pixels in resolution this worker can generate",
+                    description="The maximum pixels in resolution this worker can generate.",
                 ),
                 "megapixelsteps_generated": fields.Float(
-                    description="How many megapixelsteps this worker has generated until now"
+                    description="How many megapixelsteps this worker has generated until now."
                 ),
                 "img2img": fields.Boolean(
                     default=None,
@@ -572,15 +578,19 @@ class Models:
                     default=None,
                     description="If True, this worker supports and allows post-processing requests.",
                 ),
+                "lora": fields.Boolean(
+                    default=None,
+                    description="If True, this worker supports and allows lora requests.",
+                ),
                 "max_length": fields.Integer(
                     example=80,
-                    description="The maximum tokens this worker can generate",
+                    description="The maximum tokens this worker can generate.",
                 ),
                 "max_context_length": fields.Integer(
-                    example=80, description="The maximum tokens this worker can read"
+                    example=80, description="The maximum tokens this worker can read."
                 ),
                 "tokens_generated": fields.Float(
-                    description="How many tokens this worker has generated until now"
+                    description="How many tokens this worker has generated until now."
                 ),
             },
         )
@@ -679,14 +689,35 @@ class Models:
                     default=-1,
                     example=30,
                     required=False,
-                    description="The amount of days after which this key will expire. If -1, this key will not expire",
+                    description="The amount of days after which this key will expire. If -1, this key will not expire.",
                 ),
                 "name": fields.String(
                     min_length=3,
                     max_length=255,
                     required=False,
                     example="Mutual Aid",
-                    description="A descriptive name for this key",
+                    description="A descriptive name for this key.",
+                ),
+                "max_image_pixels": fields.Integer(
+                    min=-1,
+                    max=4194304,
+                    default=-1,
+                    required=False,
+                    description="The maximum amount of image pixels this key can generate per job. -1 means unlimited.",
+                ),
+                "max_image_steps": fields.Integer(
+                    min=-1,
+                    max=500,
+                    default=-1,
+                    required=False,
+                    description="The maximum amount of image steps this key can use per job. -1 means unlimited.",
+                ),
+                "max_text_tokens": fields.Integer(
+                    min=-1,
+                    max=500,
+                    default=-1,
+                    required=False,
+                    description="The maximum amount of text tokens this key can generate per job. -1 means unlimited.",
                 ),
             },
         )
@@ -694,19 +725,28 @@ class Models:
         self.response_model_sharedkey_details = api.model(
             "SharedKeyDetails",
             {
-                "id": fields.String(description="The SharedKey ID"),
+                "id": fields.String(description="The SharedKey ID."),
                 "username": fields.String(
                     description="The owning user's unique Username. It is a combination of their chosen alias plus their ID."
                 ),
                 "kudos": fields.Integer(
-                    description="The Kudos limit assigned to this key"
+                    description="The Kudos limit assigned to this key."
                 ),
                 "expiry": fields.DateTime(
                     dt_format="rfc822",
                     description="The date at which this API key will expire.",
                 ),
                 "utilized": fields.Integer(
-                    description="How mych kudos has been utilized via this shared key until now."
+                    description="How much kudos has been utilized via this shared key until now."
+                ),
+                "max_image_pixels": fields.Integer(
+                    description="The maximum amount of image pixels this key can generate per job. -1 means unlimited."
+                ),
+                "max_image_steps": fields.Integer(
+                    description="The maximum amount of image steps this key can use per job. -1 means unlimited."
+                ),
+                "max_text_tokens": fields.Integer(
+                    description="The maximum amount of text tokens this key can generate per job. -1 means unlimited."
                 ),
             },
         )
@@ -716,10 +756,10 @@ class Models:
             "ContributionsDetails",
             {
                 "megapixelsteps": fields.Float(
-                    description="How many megapixelsteps this user has generated"
+                    description="How many megapixelsteps this user has generated."
                 ),
                 "fulfillments": fields.Integer(
-                    description="How many images this user has generated"
+                    description="How many images this user has generated."
                 ),
             },
         )
@@ -728,10 +768,10 @@ class Models:
             "UsageDetails",
             {
                 "megapixelsteps": fields.Float(
-                    description="How many megapixelsteps this user has requested"
+                    description="How many megapixelsteps this user has requested."
                 ),
                 "requests": fields.Integer(
-                    description="How many images this user has requested"
+                    description="How many images this user has requested."
                 ),
             },
         )
@@ -753,11 +793,11 @@ class Models:
             "UserThingRecords",
             {
                 "megapixelsteps": fields.Float(
-                    description="How many megapixelsteps this user has generated or requested",
+                    description="How many megapixelsteps this user has generated or requested.",
                     default=0,
                 ),
                 "tokens": fields.Integer(
-                    description="How many token this user has generated or requested",
+                    description="How many token this user has generated or requested.",
                     default=0,
                 ),
             },
@@ -767,15 +807,15 @@ class Models:
             "UserAmountRecords",
             {
                 "image": fields.Integer(
-                    description="How many images this user has generated or requested",
+                    description="How many images this user has generated or requested.",
                     default=0,
                 ),
                 "text": fields.Integer(
-                    description="How many texts this user has generated or requested",
+                    description="How many texts this user has generated or requested.",
                     default=0,
                 ),
                 "interrogation": fields.Integer(
-                    description="How many texts this user has generated or requested",
+                    description="How many texts this user has generated or requested.",
                     default=0,
                 ),
             },
@@ -817,7 +857,7 @@ class Models:
                 ),
                 "kudos_details": fields.Nested(self.response_model_user_kudos_details),
                 "worker_count": fields.Integer(
-                    description="How many workers this user has created (active or inactive)"
+                    description="How many workers this user has created (active or inactive)."
                 ),
                 "worker_ids": fields.List(
                     fields.String(
@@ -842,9 +882,17 @@ class Models:
                     example=False,
                     description="This user has been flagged for suspicious activity.",
                 ),
+                "vpn": fields.Boolean(
+                    example=False,
+                    description="(Privileged) This user has been given the VPN role.",
+                ),
+                "special": fields.Boolean(
+                    example=False,
+                    description="(Privileged) This user has been given the Special role.",
+                ),
                 "suspicious": fields.Integer(
                     example=0,
-                    description="(Privileged) How much suspicion this user has accumulated",
+                    description="(Privileged) How much suspicion this user has accumulated.",
                 ),
                 "pseudonymous": fields.Boolean(
                     example=False,
@@ -856,7 +904,7 @@ class Models:
                 ),
                 "account_age": fields.Integer(
                     example=60,
-                    description="How many seconds since this account was created",
+                    description="How many seconds since this account was created.",
                 ),
                 "usage": fields.Nested(
                     self.response_model_use_details
@@ -874,15 +922,15 @@ class Models:
             "ModifyUserInput",
             {
                 "kudos": fields.Float(
-                    description="The amount of kudos to modify (can be negative)"
+                    description="The amount of kudos to modify (can be negative)."
                 ),
                 "concurrency": fields.Integer(
-                    description="The amount of concurrent request this user can have",
+                    description="The amount of concurrent request this user can have.",
                     min=0,
-                    max=100,
+                    max=500,
                 ),
                 "usage_multiplier": fields.Float(
-                    description="The amount by which to multiply the users kudos consumption",
+                    description="The amount by which to multiply the users kudos consumption.",
                     min=0.1,
                     max=10,
                 ),
@@ -891,11 +939,11 @@ class Models:
                 ),
                 "moderator": fields.Boolean(
                     example=False,
-                    description="Set to true to Make this user a horde moderator",
+                    description="Set to true to make this user a horde moderator.",
                 ),
                 "public_workers": fields.Boolean(
                     example=False,
-                    description="Set to true to Make this user a display their worker IDs",
+                    description="Set to true to make this user display their worker IDs.",
                 ),
                 "monthly_kudos": fields.Integer(
                     description="When specified, will start assigning the user monthly kudos, starting now!"
@@ -907,7 +955,7 @@ class Models:
                 ),
                 "trusted": fields.Boolean(
                     example=False,
-                    description="When set to true,the user and their servers will not be affected by suspicion",
+                    description="When set to true,the user and their servers will not be affected by suspicion.",
                 ),
                 "flagged": fields.Boolean(
                     example=False,
@@ -921,8 +969,12 @@ class Models:
                     example=False,
                     description="When set to true, the user will be able to onboard workers behind a VPN. This should be used as a temporary solution until the user is trusted.",
                 ),
+                "special": fields.Boolean(
+                    example=False,
+                    description="When set to true, The user can send special payloads.",
+                ),
                 "reset_suspicion": fields.Boolean(
-                    description="Set the user's suspicion back to 0"
+                    description="Set the user's suspicion back to 0."
                 ),
                 "contact": fields.String(
                     example="email@example.com",
@@ -937,11 +989,11 @@ class Models:
             "ModifyUser",
             {
                 "new_kudos": fields.Float(
-                    description="The new total Kudos this user has after this request"
+                    description="The new total Kudos this user has after this request."
                 ),
                 "concurrency": fields.Integer(
                     example=30,
-                    description="The request concurrency this user has after this request",
+                    description="The request concurrency this user has after this request.",
                 ),
                 "usage_multiplier": fields.Float(
                     example=1.0,
@@ -961,19 +1013,20 @@ class Models:
                     example="username#1", description="The user's new username."
                 ),
                 "monthly_kudos": fields.Integer(
-                    example=0, description="The user's new monthly kudos total"
+                    example=0, description="The user's new monthly kudos total."
                 ),
-                "trusted": fields.Boolean(description="The user's new trusted status"),
-                "flagged": fields.Boolean(description="The user's new flagged status"),
+                "trusted": fields.Boolean(description="The user's new trusted status."),
+                "flagged": fields.Boolean(description="The user's new flagged status."),
                 "customizer": fields.Boolean(
-                    description="The user's new customizer status"
+                    description="The user's new customizer status."
                 ),
-                "vpn": fields.Boolean(description="The user's new vpn status"),
+                "vpn": fields.Boolean(description="The user's new vpn status."),
+                "special": fields.Boolean(description="The user's new special status."),
                 "new_suspicion": fields.Integer(
-                    description="The user's new suspiciousness rating"
+                    description="The user's new suspiciousness rating."
                 ),
                 "contact": fields.String(
-                    example="email@example.com", description="The new contact details"
+                    example="email@example.com", description="The new contact details."
                 ),
             },
         )
@@ -982,43 +1035,43 @@ class Models:
             "HordePerformance",
             {
                 "queued_requests": fields.Integer(
-                    description="The amount of waiting and processing image requests currently in this Horde"
+                    description="The amount of waiting and processing image requests currently in this Horde."
                 ),
                 "queued_text_requests": fields.Integer(
-                    description="The amount of waiting and processing text requests currently in this Horde"
+                    description="The amount of waiting and processing text requests currently in this Horde."
                 ),
                 "worker_count": fields.Integer(
-                    description="How many workers are actively processing prompt generations in this Horde in the past 5 minutes"
+                    description="How many workers are actively processing prompt generations in this Horde in the past 5 minutes."
                 ),
                 "text_worker_count": fields.Integer(
-                    description="How many workers are actively processing prompt generations in this Horde in the past 5 minutes"
+                    description="How many workers are actively processing prompt generations in this Horde in the past 5 minutes."
                 ),
                 "thread_count": fields.Integer(
-                    description="How many worker threads are actively processing prompt generations in this Horde in the past 5 minutes"
+                    description="How many worker threads are actively processing prompt generations in this Horde in the past 5 minutes."
                 ),
                 "text_thread_count": fields.Integer(
-                    description="How many worker threads are actively processing prompt generations in this Horde in the past 5 minutes"
+                    description="How many worker threads are actively processing prompt generations in this Horde in the past 5 minutes."
                 ),
                 "queued_megapixelsteps": fields.Float(
-                    description="The amount of megapixelsteps in waiting and processing requests currently in this Horde"
+                    description="The amount of megapixelsteps in waiting and processing requests currently in this Horde."
                 ),
                 "past_minute_megapixelsteps": fields.Float(
-                    description="How many megapixelsteps this Horde generated in the last minute"
+                    description="How many megapixelsteps this Horde generated in the last minute."
                 ),
                 "queued_forms": fields.Float(
-                    description="The amount of image interrogations waiting and processing currently in this Horde"
+                    description="The amount of image interrogations waiting and processing currently in this Horde."
                 ),
                 "interrogator_count": fields.Integer(
-                    description="How many workers are actively processing image interrogations in this Horde in the past 5 minutes"
+                    description="How many workers are actively processing image interrogations in this Horde in the past 5 minutes."
                 ),
                 "interrogator_thread_count": fields.Integer(
-                    description="How many worker threads are actively processing image interrogation in this Horde in the past 5 minutes"
+                    description="How many worker threads are actively processing image interrogation in this Horde in the past 5 minutes."
                 ),
                 "queued_tokens": fields.Float(
-                    description="The amount of tokens in waiting and processing requests currently in this Horde"
+                    description="The amount of tokens in waiting and processing requests currently in this Horde."
                 ),
                 "past_minute_tokens": fields.Float(
-                    description="How many tokens this Horde generated in the last minute"
+                    description="How many tokens this Horde generated in the last minute."
                 ),
             },
         )
@@ -1027,9 +1080,9 @@ class Models:
             "Newspiece",
             {
                 "date_published": fields.String(
-                    description="The date this newspiece was published"
+                    description="The date this newspiece was published."
                 ),
-                "newspiece": fields.String(description="The actual piece of news"),
+                "newspiece": fields.String(description="The actual piece of news."),
                 "importance": fields.String(
                     example="Information",
                     description="How critical this piece of news is.",
@@ -1065,20 +1118,20 @@ class Models:
             self.response_model_active_model_lite,
             {
                 "performance": fields.Float(
-                    description="The average speed of generation for this model"
+                    description="The average speed of generation for this model."
                 ),
                 "queued": fields.Float(
-                    description="The amount waiting to be generated by this model"
+                    description="The amount waiting to be generated by this model."
                 ),
                 "jobs": fields.Float(
-                    description="The job count waiting to be generated by this model"
+                    description="The job count waiting to be generated by this model."
                 ),
                 "eta": fields.Integer(
-                    description="Estimated time in seconds for this model's queue to be cleared"
+                    description="Estimated time in seconds for this model's queue to be cleared."
                 ),
                 "type": fields.String(
                     example="image",
-                    description="The model type (text or image)",
+                    description="The model type (text or image).",
                     enum=["image", "text"],
                 ),
             },
@@ -1086,9 +1139,11 @@ class Models:
         self.response_model_deleted_worker = api.model(
             "DeletedWorker",
             {
-                "deleted_id": fields.String(description="The ID of the deleted worker"),
+                "deleted_id": fields.String(
+                    description="The ID of the deleted worker."
+                ),
                 "deleted_name": fields.String(
-                    description="The Name of the deleted worker"
+                    description="The Name of the deleted worker."
                 ),
             },
         )
@@ -1108,7 +1163,7 @@ class Models:
                     description="How many Kudos the workers in this team have been rewarded while part of this team."
                 ),
                 "uptime": fields.Integer(
-                    description="The total amount of time workers have stayed online while on this team"
+                    description="The total amount of time workers have stayed online while on this team."
                 ),
                 "creator": fields.String(
                     example="db0#1",
@@ -1116,7 +1171,7 @@ class Models:
                 ),
                 "worker_count": fields.Integer(
                     example=10,
-                    description="How many workers have been dedicated to this team",
+                    description="How many workers have been dedicated to this team.",
                 ),
                 "workers": fields.List(
                     fields.Nested(self.response_model_worker_details_lite)
@@ -1164,18 +1219,18 @@ class Models:
         self.response_model_deleted_team = api.model(
             "DeletedTeam",
             {
-                "deleted_id": fields.String(description="The ID of the deleted team"),
+                "deleted_id": fields.String(description="The ID of the deleted team."),
                 "deleted_name": fields.String(
-                    description="The Name of the deleted team"
+                    description="The Name of the deleted team."
                 ),
             },
         )
         self.response_model_team_modify = api.model(
             "ModifyTeam",
             {
-                "id": fields.String(description="The ID of the team"),
-                "name": fields.String(description="The Name of the team"),
-                "info": fields.String(description="The Info of the team"),
+                "id": fields.String(description="The ID of the team."),
+                "name": fields.String(description="The Name of the team."),
+                "info": fields.String(description="The Info of the team."),
             },
         )
         self.input_model_delete_ip_timeout = api.model(
@@ -1184,7 +1239,7 @@ class Models:
                 "ipaddr": fields.String(
                     example="127.0.0.1",
                     required=True,
-                    description="The IP address to remove from timeout",
+                    description="The IP address to remove from timeout.",
                     min_length=7,
                     max_length=15,
                 ),
@@ -1196,7 +1251,7 @@ class Models:
                 "message": fields.String(
                     default="OK",
                     required=True,
-                    description="The result of this operation",
+                    description="The result of this operation.",
                 ),
             },
         )
@@ -1211,18 +1266,18 @@ class Models:
                 ),
                 "filter_type": fields.Integer(
                     required=True,
-                    description="The integer defining this filter type",
+                    description="The integer defining this filter type.",
                     min=10,
                     max=29,
                     example=10,
                 ),
                 "description": fields.String(
-                    required=False, description="Description about this regex"
+                    required=False, description="Description about this regex."
                 ),
                 "replacement": fields.String(
                     required=False,
                     default="",
-                    description="The replacement string for this regex",
+                    description="The replacement string for this regex.",
                 ),
             },
         )
@@ -1236,18 +1291,18 @@ class Models:
                 ),
                 "filter_type": fields.Integer(
                     required=False,
-                    description="The integer defining this filter type",
+                    description="The integer defining this filter type.",
                     min=10,
                     max=29,
                     example=10,
                 ),
                 "description": fields.String(
-                    required=False, description="Description about this regex"
+                    required=False, description="Description about this regex."
                 ),
                 "replacement": fields.String(
                     required=False,
                     default="",
-                    description="The replacement string for this regex",
+                    description="The replacement string for this regex.",
                 ),
             },
         )
@@ -1265,13 +1320,13 @@ class Models:
                 ),
                 "filter_type": fields.Integer(
                     required=True,
-                    description="The integer defining this filter type",
+                    description="The integer defining this filter type.",
                     min=10,
                     max=29,
                     example=10,
                 ),
                 "description": fields.String(
-                    required=False, description="Description about this regex"
+                    required=False, description="Description about this regex."
                 ),
                 "replacement": fields.String(
                     required=False,
@@ -1280,7 +1335,7 @@ class Models:
                 ),
                 "user": fields.String(
                     required=True,
-                    description="The moderator which added or last updated this regex",
+                    description="The moderator which added or last updated this regex.",
                 ),
             },
         )
@@ -1295,7 +1350,7 @@ class Models:
                 "matches": fields.List(
                     fields.String(
                         required=True,
-                        description="Which words in the prompt matched the filters",
+                        description="Which words in the prompt matched the filters.",
                     )
                 ),
             },
@@ -1305,7 +1360,7 @@ class Models:
             {
                 "filter_type": fields.Integer(
                     required=True,
-                    description="The integer defining this filter type",
+                    description="The integer defining this filter type.",
                     min=10,
                     max=29,
                     example=10,

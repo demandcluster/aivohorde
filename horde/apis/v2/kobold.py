@@ -46,11 +46,11 @@ class TextAsyncGenerate(GenerateTemplate):
             logger.error(self.args.params)
             return {"message": "Internal Server Error"}, 500
         if self.args.dry_run:
-            ret_dict = {"kudos": self.kudos}
+            ret_dict = {"kudos": round(self.kudos)}
             return ret_dict, 200
         ret_dict = {
             "id": self.wp.id,
-            "kudos": self.kudos,
+            "kudos": round(self.kudos),
         }
         if not database.wp_has_valid_workers(self.wp) and not settings.mode_raid():
             ret_dict["message"] = self.get_size_too_big_message()
@@ -103,6 +103,13 @@ class TextAsyncGenerate(GenerateTemplate):
                     message=f"Due to heavy demand, for requests over {tokens} tokens, the client needs to already have the required kudos. This request requires {required_kudos} kudos to fulfil.",
                 )
 
+        if self.sharedkey:
+            is_in_limit, fail_message = self.sharedkey.is_job_within_limits(
+                text_tokens=self.wp.max_length,
+            )
+            if not is_in_limit:
+                raise e.BadRequest(fail_message)
+
     def get_size_too_big_message(self):
         return "Warning: No available workers can fulfill this request. It will expire in 20 minutes. Consider reducing the amount of tokens to generate."
 
@@ -146,7 +153,7 @@ class TextAsyncStatus(Resource):
         if not wp:
             raise e.RequestNotFound(
                 id,
-                request_type="Text Waiting Prompt",
+                request_type="Text Waiting Prompt (Status)",
                 client_agent=self.args["Client-Agent"],
                 ipaddr=request.remote_addr,
             )
@@ -184,7 +191,7 @@ class TextAsyncStatus(Resource):
         if not wp:
             raise e.RequestNotFound(
                 id,
-                request_type="Text Waiting Prompt",
+                request_type="Text Waiting Prompt (Delete)",
                 client_agent=self.args["Client-Agent"],
                 ipaddr=request.remote_addr,
             )
@@ -245,6 +252,7 @@ class TextJobPop(JobPopTemplate):
             self.worker,
             self.models,
             priority_user_ids=priority_user_ids,
+            page=self.wp_page,
         )
 
         return sorted_wps

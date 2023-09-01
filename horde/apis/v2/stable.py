@@ -5,7 +5,7 @@ from datetime import datetime
 from .base import *
 from horde.classes.stable.waiting_prompt import ImageWaitingPrompt
 from horde.classes.stable.worker import ImageWorker
-from horde.classes.stable.interrogation import Interrogation, InterrogationForms
+from horde.classes.stable.interrogation import Interrogation
 from horde.classes.stable.interrogation_worker import InterrogationWorker
 from horde.countermeasures import CounterMeasures
 from horde.logger import logger
@@ -56,11 +56,11 @@ class ImageAsyncGenerate(GenerateTemplate):
             logger.error(self.args.params)
             return {"message": "Internal Server Error"}, 500
         if self.args.dry_run:
-            ret_dict = {"kudos": self.kudos}
+            ret_dict = {"kudos": round(self.kudos)}
             return ret_dict, 200
         ret_dict = {
             "id": self.wp.id,
-            "kudos": self.kudos,
+            "kudos": round(self.kudos),
         }
         if not database.wp_has_valid_workers(self.wp) and not settings.mode_raid():
             ret_dict["message"] = self.get_size_too_big_message()
@@ -86,6 +86,28 @@ class ImageAsyncGenerate(GenerateTemplate):
             # We actually block unsafe IPs for now to combat CP
             if not self.safe_ip:
                 raise e.NotTrusted
+        if not self.user.special and self.params.get("special"):
+            raise e.BadRequest("Only special users can send a special field.")
+        for model in self.args.models:
+            if "horde_special" in model:
+                if not self.user.special:
+                    raise e.BadRequest(
+                        "Only special users can request a special model."
+                    )
+                usermodel = model.split("::")
+                if len(usermodel) == 1:
+                    raise e.BadRequest(
+                        "Special models must always include the username, in the form of 'horde_special::user#id'"
+                    )
+                user_alias = usermodel[1]
+                if self.user.get_unique_alias() != user_alias:
+                    raise e.BadRequest(
+                        f"This model can only be requested by {user_alias}"
+                    )
+                if not self.params.get("special"):
+                    raise e.BadRequest(
+                        f"Special models have to include a special payload"
+                    )
         if not self.args.source_image and self.args.source_mask:
             raise e.SourceMaskUnnecessary
         if self.params.get("control_type") in ["normal", "mlsd", "hough"] and any(
@@ -105,6 +127,12 @@ class ImageAsyncGenerate(GenerateTemplate):
         #    raise e.UnsupportedModel("This feature is disabled for the moment.")
         if "control_type" in self.params and not self.args.source_image:
             raise e.UnsupportedModel("Controlnet Requires a source image.")
+        if "loras" in self.params and len(self.params["loras"]) > 5:
+            raise e.BadRequest("You cannot request more than 5 loras per generation.")
+        if "tis" in self.params and len(self.params["tis"]) > 20:
+            raise e.BadRequest(
+                "You cannot request more than 10 Textual Inversions per generation."
+            )
         if self.params.get("init_as_image") and self.params.get("return_control_map"):
             raise e.UnsupportedModel(
                 "Invalid ControlNet parameters - cannot send inital map and return the same map"
@@ -119,6 +147,17 @@ class ImageAsyncGenerate(GenerateTemplate):
             for model_name in self.args.models
         ):
             raise e.UnsupportedModel
+        # If the beta has been requested, it takes over the model list
+        if "SDXL_beta::stability.ai#6901" in self.models:
+            if self.user.is_anon():
+                raise e.Forbidden("Anonymous users cannot use the SDXL_beta.")
+            self.models = ["SDXL_beta::stability.ai#6901"]
+            if self.params["n"] == 1:
+                raise e.BadRequest(
+                    "You need to request at least 2 images for SDXL to allow for comparison"
+                )
+            # SDXL_Beta always generates 2 images
+            self.params["n"] = 2
         if self.args.source_mask and self.params.get("sampler_name") == "DDIM":
             raise e.UnsupportedModel("You cannot use a mask with the DDIM sampler")
         if self.args.source_image:
@@ -165,8 +204,10 @@ class ImageAsyncGenerate(GenerateTemplate):
             shared = True
         if self.args.source_image:
             shared = False
-        # hlky metldown
-        shared = False
+        if "SDXL_beta::stability.ai#6901" in self.models:
+            shared = True
+        else:
+            shared = False
         self.wp = ImageWaitingPrompt(
             worker_ids=self.workers,
             models=self.models,
@@ -188,7 +229,11 @@ class ImageAsyncGenerate(GenerateTemplate):
         )
         _, total_threads = database.count_active_workers("image")
         required_kudos = self.wp.kudos * self.wp.n
-        if self.sharedkey and required_kudos > self.sharedkey.kudos:
+        if (
+            self.sharedkey
+            and self.sharedkey.kudos != -1
+            and required_kudos > self.sharedkey.kudos
+        ):
             raise e.KudosUpfront(
                 required_kudos,
                 self.username,
@@ -207,13 +252,21 @@ class ImageAsyncGenerate(GenerateTemplate):
             # else:
             #     logger.warning(f"{self.username} requested generation {self.wp.id} requiring upfront kudos: {required_kudos}")
 
+        if self.sharedkey:
+            requested_total_pixels = self.wp.params["height"] * self.wp.params["width"]
+            requested_steps = self.wp.params["steps"]
+
+            is_in_limit, fail_message = self.sharedkey.is_job_within_limits(
+                image_pixels=requested_total_pixels,
+                image_steps=requested_steps,
+            )
+            if not is_in_limit:
+                raise e.BadRequest(fail_message)
+
     def extrapolate_dry_run_kudos(self):
-        source_processing = self.args.source_processing
-        if not self.args.source_image:
-            source_processing = "txt2img"
         self.wp.source_image = self.args.source_image
         self.wp.source_mask = self.args.source_mask
-        self.wp.source_processing = source_processing
+        self.wp.source_processing = self.args.source_processing
         return super().extrapolate_dry_run_kudos()
 
     def get_hashed_params_dict(self):
@@ -288,7 +341,7 @@ class ImageAsyncStatus(Resource):
         if not wp:
             raise e.RequestNotFound(
                 id,
-                request_type="Image Waiting Prompt",
+                request_type="Image Waiting Prompt (Status)",
                 client_agent=self.args["Client-Agent"],
                 ipaddr=request.remote_addr,
             )
@@ -326,7 +379,7 @@ class ImageAsyncStatus(Resource):
         if not wp:
             raise e.RequestNotFound(
                 id,
-                request_type="Image Waiting Prompt",
+                request_type="Image Waiting Prompt (Delete)",
                 client_agent=self.args["Client-Agent"],
                 ipaddr=request.remote_addr,
             )
@@ -340,6 +393,7 @@ class ImageAsyncStatus(Resource):
         # FIXME: I pevent it at the moment due to the race conditions
         # The WPCleaner is going to clean it up anyway
         wp.n = 0
+        wp.jobs = wp_status["finished"]
         db.session.commit()
         return (wp_status, 200)
 
@@ -378,7 +432,7 @@ class ImageAsyncCheck(Resource):
         if not wp:
             raise e.RequestNotFound(
                 id,
-                request_type="Image Waiting Prompt",
+                request_type="Image Waiting Prompt (Check)",
                 client_agent=self.args["Client-Agent"],
                 ipaddr=request.remote_addr,
             )
@@ -413,7 +467,19 @@ class ImageJobPop(JobPopTemplate):
         self.blacklist = []
         if self.args.blacklist:
             self.blacklist = self.args.blacklist
-        return super().post()
+        post_ret, retcode = super().post()
+        if post_ret["id"] == None:
+            db_skipped = database.count_skipped_image_wp(
+                self.worker,
+                self.models,
+                self.blacklist,
+            )
+            if "kudos" in post_ret.get("skipped", {}):
+                db_skipped["kudos"] = post_ret["skipped"]["kudos"]
+            if "blacklist" in post_ret.get("skipped", {}):
+                db_skipped["blacklist"] = post_ret["skipped"]["blacklist"]
+            post_ret["skipped"] = db_skipped
+        return post_ret, retcode
 
     def check_in(self):
         self.worker.check_in(
@@ -432,6 +498,7 @@ class ImageJobPop(JobPopTemplate):
             allow_unsafe_ipaddr=self.args.allow_unsafe_ipaddr,
             allow_post_processing=self.args.allow_post_processing,
             allow_controlnet=self.args.allow_controlnet,
+            allow_lora=self.args.allow_lora,
             priority_usernames=self.priority_usernames,
         )
 
@@ -442,6 +509,7 @@ class ImageJobPop(JobPopTemplate):
             self.models,
             self.blacklist,
             priority_user_ids=priority_user_ids,
+            page=self.wp_page,
         )
         return sorted_wps
 
@@ -506,7 +574,7 @@ class Aesthetics(Resource):
     @api.response(401, "Invalid API Key", models.response_model_error)
     @api.response(404, "Generation Request Not Found", models.response_model_error)
     def post(self, id):
-        """Submit aesthetic ratings for generated images to be used by LAION
+        """Submit aesthetic ratings for generated images to be used by LAION and Stability.AI
         The request has to have been sent as shared: true.
         You can select the best image in the set, and/or provide a rating for each or some images in the set.
         If you select best-of image, you will gain 4 kudos. Each rating is 5 kudos. Best-of will be ignored when ratings conflict with it.
@@ -517,7 +585,7 @@ class Aesthetics(Resource):
         if not wp:
             raise e.RequestNotFound(
                 id,
-                request_type="Image Waiting Prompt",
+                request_type="Image Waiting Prompt (Aesthetics)",
                 client_agent=self.args["Client-Agent"],
             )
         if not wp.is_completed():
@@ -575,7 +643,7 @@ class Aesthetics(Resource):
             self.kudos = 5 * len(self.args.ratings)
             for r in self.args.ratings:
                 if r.get("artifacts") is not None:
-                    self.kudos += 3
+                    self.kudos += 5
             aesthetic_payload["ratings"] = self.args.ratings
             # If they only rated one, and rated it > 7, we assume it's the best of the set by default
             # Unless another bestof was selected (for some reason)
@@ -587,7 +655,7 @@ class Aesthetics(Resource):
                     ):
                         aesthetic_payload["best"] = self.args.ratings[0]["id"]
                 elif self.args.best:
-                    self.kudos += 4
+                    self.kudos += 15
                     aesthetic_payload["best"] = self.args.best
             if len(self.args.ratings) > 1:
                 bestofs = None
@@ -610,7 +678,7 @@ class Aesthetics(Resource):
                 if len(bestofs) == 1:
                     aesthetic_payload["best"] = bestofs[0]
         else:
-            self.kudos = 4
+            self.kudos = 15
             aesthetic_payload["best"] = self.args.best
         # You can never get more kudos from rating that what you consumed
         if self.kudos >= wp.consumed_kudos:
@@ -618,7 +686,7 @@ class Aesthetics(Resource):
         logger.debug(aesthetic_payload)
         try:
             submit_req = requests.post(
-                "https://ratings.droom.cloud/api/v1/rating/set",
+                "https://ratings.aihorde.net/api/v1/rating/set",
                 json=aesthetic_payload,
                 timeout=3,
             )

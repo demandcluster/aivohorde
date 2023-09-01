@@ -3,6 +3,7 @@ import os
 
 import dateutil.relativedelta
 from datetime import datetime
+from typing import Optional
 from sqlalchemy import Enum, UniqueConstraint
 from sqlalchemy.ext.hybrid import hybrid_property
 from sqlalchemy.dialects.postgresql import UUID
@@ -79,6 +80,9 @@ class UserSharedKey(db.Model):
     name = db.Column(db.String(255), nullable=True)
     utilized = db.Column(db.BigInteger, default=0, nullable=False)
     waiting_prompts = db.relationship("WaitingPrompt", back_populates="sharedkey", passive_deletes=True, cascade="all, delete-orphan")
+    max_image_pixels = db.Column(db.Integer, default=-1, nullable=False)
+    max_image_steps = db.Column(db.Integer, default=-1, nullable=False)
+    max_text_tokens = db.Column(db.Integer, default=-1, nullable=False)
 
     @logger.catch(reraise=True)
     def get_details(self):
@@ -88,6 +92,9 @@ class UserSharedKey(db.Model):
             "kudos": self.kudos,
             "expiry": self.expiry,
             "utilized": self.utilized,
+            "max_image_pixels": self.max_image_pixels,
+            "max_image_steps": self.max_image_steps,
+            "max_text_tokens": self.max_text_tokens,
         }
         return ret_dict
 
@@ -109,6 +116,39 @@ class UserSharedKey(db.Model):
             return False,"This shared key has expired"
         else:
             return True, None
+
+    def is_job_within_limits(self, 
+        *, 
+        image_pixels: Optional[int] = None, 
+        image_steps: Optional[int] = None,
+        text_tokens: Optional[int] = None,
+    ) -> tuple[bool, Optional[str]]:
+        """Checks if the job is within the limits of the shared key
+
+        Args:
+            image_pixels (int, optional): The number of requested pixels. Defaults to None.
+            image_steps (int, optional): The number of requested steps. Defaults to None.
+            text_tokens (int, optional): The number of requested tokens. Defaults to None.
+
+        Returns:
+            tuple[bool, str | None]: Whether the job is within the limits and a message if it is not
+        """
+        
+        if  image_pixels and self.max_image_pixels and self.max_image_pixels != -1:
+            if image_pixels > self.max_image_pixels:
+                return False, f"This shared key is limited to {self.max_image_pixels} pixels per job. You requested {image_pixels} pixels."
+                
+        if image_steps and self.max_image_steps and self.max_image_steps != -1:    
+            if image_steps > self.max_image_steps:
+                return False, f"This shared key is limited to {self.max_image_steps} steps per job. You requested {image_steps} steps."
+
+        if text_tokens and self.max_text_tokens and self.max_text_tokens != -1:    
+            if text_tokens > self.max_text_tokens:
+                return False, f"This shared key is limited to {self.max_text_tokens} tokens per job. You requested {text_tokens} tokens."
+
+        return True, None
+
+    
 
 class User(db.Model):
     __tablename__ = "users"
@@ -259,6 +299,26 @@ class User(db.Model):
             ).as_scalar()
         return cls.id == subquery
 
+    @hybrid_property
+    def special(self) -> bool:
+        user_role = UserRole.query.filter_by(
+            user_id=self.id, 
+            user_role=UserRoleTypes.SPECIAL
+        ).first()
+        return user_role is not None and user_role.value
+
+    @special.expression
+    def special(cls):
+        subquery = db.session.query(UserRole.user_id
+            ).filter(
+                UserRole.user_role == UserRoleTypes.SPECIAL,
+                UserRole.value == True,
+                UserRole.user_id == cls.id
+            ).correlate(
+                cls
+            ).as_scalar()
+        return cls.id == subquery
+
     def create(self):
         self.check_for_bad_actor()
         db.session.add(self)
@@ -362,6 +422,11 @@ class User(db.Model):
             return
         self.set_user_role(UserRoleTypes.VPN, is_vpn)
 
+    def set_special(self, is_special):
+        if self.is_anon():
+            return
+        self.set_user_role(UserRoleTypes.SPECIAL, is_special)
+
     def get_unique_alias(self):
         return(f"{self.username}#{self.id}")
 
@@ -410,7 +475,7 @@ class User(db.Model):
         )
         # While a worker is untrusted, half of all generated kudos go for evaluation
         if not self.trusted and not self.is_anon():
-            kudos_eval = round(kudos / 2)
+            kudos_eval = round(kudos / 2, 2)
             kudos -= kudos_eval
             self.evaluating_kudos += kudos_eval
             self.modify_kudos(kudos,"accumulated")
@@ -424,10 +489,10 @@ class User(db.Model):
         )
         
 
-    def record_uptime(self, kudos):
+    def record_uptime(self, kudos, bypass_eval = False):
         self.last_active = datetime.utcnow()
         # While a worker is untrusted, all uptime kudos go for evaluation
-        if not self.trusted and not self.is_anon():
+        if not bypass_eval and not self.trusted and not self.is_anon():
             self.evaluating_kudos += kudos
             self.check_for_trust()
         else:
@@ -454,6 +519,7 @@ class User(db.Model):
     def modify_monthly_kudos(self, monthly_kudos):
         # We always give upfront the monthly kudos to the user once.
         # If they already had some, we give the difference but don't change the date
+        logger.info(f"Modifying monthly kudos of {self.get_unique_alias()} by {monthly_kudos}")
         if monthly_kudos > 0:
             self.modify_kudos(monthly_kudos, "recurring")
         if not self.monthly_kudos_last_received:
@@ -463,23 +529,27 @@ class User(db.Model):
             self.monthly_kudos = 0
         db.session.commit()
 
-    def receive_monthly_kudos(self):
+    def receive_monthly_kudos(self, force=False, prevent_date_change = False):
         kudos_amount = self.calculate_monthly_kudos()
         if kudos_amount == 0:
+            logger.warning(f"receive_monthly_kudos() received 0 kudos account {self.get_unique_alias()}")
             return
-        if self.monthly_kudos_last_received:
+        if force:
+            has_month_passed = True
+        elif self.monthly_kudos_last_received:
             has_month_passed = datetime.utcnow() > self.monthly_kudos_last_received + dateutil.relativedelta.relativedelta(months=+1)
         else:
             # If the user is supposed to receive Kudos, but doesn't have a last received date, it means it is a moderator who hasn't received it the first time
             has_month_passed = True
         if has_month_passed:
+            logger.info(f"Preparing to assign {kudos_amount} monthly kudos to {self.get_unique_alias()}. Current total {self.kudos}")
             # Not committing as it'll happen in modify_kudos() anyway
             if not self.monthly_kudos_last_received:
                 self.monthly_kudos_last_received = datetime.utcnow() + dateutil.relativedelta.relativedelta(months=+1)
-            else:
+            elif not prevent_date_change:
                 self.monthly_kudos_last_received = self.monthly_kudos_last_received + dateutil.relativedelta.relativedelta(months=+1)
             self.modify_kudos(kudos_amount, "recurring")
-            logger.info(f"User {self.get_unique_alias()} received their {kudos_amount} monthly Kudos")
+            logger.info(f"User {self.get_unique_alias()} received their {kudos_amount} monthly Kudos. Their new total is {self.kudos}")
 
     def calculate_monthly_kudos(self):
         base_amount = self.monthly_kudos
@@ -542,7 +612,7 @@ class User(db.Model):
         # Anon is never considered suspicious
         if self.is_anon():
             return
-        if int(reason) in self.suspicions and reason not in [Suspicions.UNREASONABLY_FAST,Suspicions.TOO_MANY_JOBS_ABORTED]:
+        if reason not in [Suspicions.UNREASONABLY_FAST, Suspicions.TOO_MANY_JOBS_ABORTED] and int(reason) in self.get_suspicion_reasons():
             return
         new_suspicion = UserSuspicions(user_id=self.id, suspicion_id=int(reason))
         db.session.add(new_suspicion)
@@ -550,6 +620,9 @@ class User(db.Model):
         if reason:
             reason_log = SUSPICION_LOGS[reason].format(*formats)
             logger.warning(f"User '{self.id}' suspicion increased to {len(self.suspicions)}. Reason: {reason}")
+
+    def get_suspicion_reasons(self):
+        return set([s.suspicion_id for s in self.suspicions])
 
     def reset_suspicion(self):
         '''Clears the user's suspicion and resets their reasons'''
@@ -662,6 +735,8 @@ class User(db.Model):
                 workers_array.append(str(worker.id))
             ret_dict["worker_ids"] = workers_array
             ret_dict['contact'] = self.contact
+            ret_dict['vpn'] = self.vpn
+            ret_dict['special'] = self.special
         if details_privilege >= 1:
             sharedkeys_array = []
             for sk in self.sharedkeys:

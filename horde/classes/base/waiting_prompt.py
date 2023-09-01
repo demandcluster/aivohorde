@@ -167,26 +167,36 @@ class WaitingPrompt(db.Model):
         self.gen_payload = self.params
         db.session.commit()
     
-    def get_job_payload(self, procgen):
+    def get_job_payload(self):
         return(self.gen_payload)
 
     def needs_gen(self):
         return self.n > 0
 
     def start_generation(self, worker):
-        # We have to do this to lock the row for updates, to ensure we don't have racing conditions on who is picking up requests
-        myself_refresh = db.session.query(type(self)).filter(type(self).id == self.id, type(self).n > 0).with_for_update().first()
-        if not myself_refresh:
-            return None
-        myself_refresh.n -= 1
+        # # We have to do this to lock the row for updates, to ensure we don't have racing conditions on who is picking up requests
+        # myself_refresh = db.session.query(
+        #     type(self)
+        # ).filter(
+        #     type(self).id == self.id, 
+        #     type(self).n > 0
+        # ).with_for_update().populate_existing().first()
+        # if not myself_refresh:
+        #     return None
+        # myself_refresh.n -= 1
+        self.n -= 1
+        # We get the payload now, so that we ensure any further commits won't disrupt what our n value is
+        # as that value is used to calclate that payload
+        payload = self.get_job_payload()
         db.session.commit()
         procgen_class = procgen_classes[self.wp_type]
         new_gen = procgen_class(wp_id=self.id, worker_id=worker.id)
-        self.n = myself_refresh.n
         logger.audit(f"Procgen with ID {new_gen.id} popped from WP {self.id} by worker {worker.id} ('{worker.name}' / {worker.ipaddr}) - {self.n} gens left")
-        return self.get_pop_payload(new_gen)
+        pop_payload = self.get_pop_payload(new_gen, payload)
+        return pop_payload
 
     def fake_generation(self, worker):
+        payload = self.get_job_payload()
         procgen_class = procgen_classes[self.wp_type]
         new_gen = procgen_class(
             wp_id=self.id, 
@@ -196,14 +206,14 @@ class WaitingPrompt(db.Model):
         db.session.add(new_trick)
         db.session.commit()
         logger.audit(f"FAKE Procgen with ID {new_gen.id} popped from WP {self.id} by worker {worker.id} ('{worker.name}' / {worker.ipaddr}) - {self.n} gens left")
-        return self.get_pop_payload(new_gen)
+        return self.get_pop_payload(new_gen, payload)
     
     def tricked_worker(self, worker):
         return worker.id in [w.worker_id for w in self.tricked_workers]
 
-    def get_pop_payload(self, procgen):
+    def get_pop_payload(self, procgen, payload):
         prompt_payload = {
-            "payload": self.get_job_payload(procgen),
+            "payload": payload,
             "id": procgen.id,
             "model": procgen.model,
         }
@@ -251,6 +261,15 @@ class WaitingPrompt(db.Model):
     #     '''The things still queued to be generated for this waiting prompt'''
     #     return round(self.things * self.n ,2)
 
+    def get_generations(self):
+        generations = []
+        for procgen in self.processing_gens:
+            if procgen.fake:
+                continue
+            if procgen.is_completed():
+                generations.append(procgen.get_details())
+        return generations
+
     def get_status(
             self, 
             request_avg, 
@@ -270,12 +289,7 @@ class WaitingPrompt(db.Model):
         ret_dict["faulted"] = self.faulted
         # Lite mode does not include the generations, to spare me download size
         if not lite:
-            ret_dict["generations"] = []
-            for procgen in self.processing_gens:
-                if procgen.fake:
-                    continue
-                if procgen.is_completed():
-                    ret_dict["generations"].append(procgen.get_details())
+            ret_dict["generations"] = self.get_generations()
 
         queue_pos, queued_things, queued_n = wp_queue_stats
         # We increment the priority by 1, because it starts at -1
@@ -300,7 +314,7 @@ class WaitingPrompt(db.Model):
                 highest_expected_time_left = expected_time_left
         wait_time += highest_expected_time_left
         ret_dict["wait_time"] = round(wait_time)
-        ret_dict["kudos"] = self.consumed_kudos
+        ret_dict["kudos"] = round(self.consumed_kudos)
         ret_dict["is_possible"] = has_valid_workers
         return(ret_dict)
 
@@ -336,7 +350,8 @@ class WaitingPrompt(db.Model):
 
     def extrapolate_dry_run_kudos(self):
         kudos = self.calculate_kudos()
-        return self.calculate_extra_kudos_burn(kudos) * self.n
+        # The +1 is the extra kudos burn per request
+        return (self.calculate_extra_kudos_burn(kudos) * self.n) + 1
     
     def log_faulted_prompt(self):
         '''Extendable function to log why a request was aborted'''
@@ -358,10 +373,13 @@ class WaitingPrompt(db.Model):
 
     def abort_for_maintenance(self):
         '''sets all waiting requests to 0, so that all clients pick them up once the client gen is completed'''
-        if self.is_completed():
-            return
-        self.n = 0
-        db.session.commit()
+        try:
+            if self.is_completed():
+                return
+            self.n = 0
+            db.session.commit()
+        except Exception as err:
+            logger.warning(f"Error when aborting WP. Skipping: {err}")
 
     def refresh(self):
         self.expiry = get_expiry_date()

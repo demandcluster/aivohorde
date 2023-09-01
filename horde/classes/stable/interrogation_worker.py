@@ -49,6 +49,10 @@ class InterrogationWorker(WorkerTemplate):
         )
 
     def calculate_uptime_reward(self):
+        # If the alchemist is not trusted yet, we give them some extra uptime kudos to tide them over until they get trusted
+        # as otherwise due to the low amount of jobs, they won't be a making any kudos
+        if not self.user.trusted and not self.user.is_anon():
+            self.user.record_uptime(40, True)
         return 40
 
     def can_interrogate(self, interrogation_form):
@@ -134,3 +138,8 @@ class InterrogationWorker(WorkerTemplate):
         else:
             ret_str = f"No requests fulfilled yet"
         return ret_str
+
+    def get_details(self, details_privilege=0):
+        ret_dict = super().get_details(details_privilege)
+        ret_dict["forms"] = self.get_form_names()
+        return ret_dict

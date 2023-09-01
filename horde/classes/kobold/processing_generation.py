@@ -1,3 +1,5 @@
+import math
+
 from horde.logger import logger
 from horde.classes.base.processing_generation import ProcessingGeneration
 from horde.classes.kobold.genstats import record_text_statistic
@@ -25,24 +27,33 @@ class TextProcessingGeneration(ProcessingGeneration):
         return ret_dict
 
     def get_gen_kudos(self):
-        # We have pre-calculated them as they don't change per worker
+        # This formula creates an exponential increase on the kudos consumption, based on the context requested
+        # 1024 context is considered the base.
+        # The reason is that higher context has exponential VRAM requirements
+        context_multiplier = 2.5 ** (math.log2(self.wp.max_context_length / 1024))
+        # Prevent shenanigans
+        if context_multiplier > 30:
+            context_multiplier = 30
+        if context_multiplier < 0.1:
+            context_multiplier = 0.1
         # If a worker serves an unknown model, they only get 1 kudos, unless they're trusted in which case they get 20
         if not model_reference.is_known_text_model(self.model):
             if not self.worker.user.trusted:
-                return 1
+                return context_multiplier
             # Trusted users with an unknown model gain 1 per token requested, as we don't know their parameters amount
-            return self.wp.max_length * 0.12
-        return round(
+            return self.wp.max_length * 0.12 * context_multiplier
+        # This is the approximate reward for generating with a 2.7 model at 4bit
+        kudos = (
             self.wp.max_length
             * model_reference.get_text_model_multiplier(self.model)
-            / 21,
-            2,
+            / 84
         )
+        return round(kudos * context_multiplier, 2)
 
     def log_aborted_generation(self):
         record_text_statistic(self)
         logger.info(
-            f"Aborted Stale Generation {self.id} "
+            f"Aborted Stale Generation {self.id} of wp {str(self.wp_id)} "
             f"(for {self.wp.max_length} tokens and {self.wp.max_context_length} content length) "
             f" from by worker: {self.worker.name} ({self.worker.id})"
         )

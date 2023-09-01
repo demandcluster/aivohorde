@@ -1,15 +1,20 @@
 from horde.logger import logger
+from horde.consts import KNOWN_POST_PROCESSORS
 
 BRIDGE_CAPABILITIES = {
     "AI Horde Worker": {
+        24: {"textual_inversion"},
+        23: {
+            "image_is_control"
+        },  # This used to be bridge version 16, but support was lost in the hordelib update
+        22: {"lora"},
         21: {"RealESRGAN_x2plus"},
         19: {"NMKD_Siax", "4x_AnimeSharp"},
         18: {"strip_background", "return_control_map", "RealESRGAN_x4plus_anime_6B"},
-        16: {"image_is_control"},
         15: {"controlnet"},
         14: {"r2_source"},
         13: {"hires_fix", "clip_skip"},
-        11: {"tiling"},
+        # 11: {"tiling"},
         9: {"CodeFormers"},
         8: {"r2"},
         7: {"post-processing", "GFPGAN", "RealESRGAN_x4plus"},
@@ -132,11 +137,12 @@ def check_bridge_capability(capability, bridge_agent):
     return capability in total_capabilities
 
 
-def check_sampler_capability(sampler, bridge_agent, karras=True):
+def get_supported_samplers(bridge_agent, karras=True):
     bridge_name, bridge_version = parse_bridge_agent(bridge_agent)
     if bridge_name not in BRIDGE_SAMPLERS:
-        # When it's an unknown worker agent, we let it through.
-        return True
+        # When it's an unknown worker agent we treat it like AI Horde Worker
+        bridge_name = "AI Horde Worker"
+        bridge_version = 23
     available_samplers = set()
     for iter in range(bridge_version + 1):
         if iter in BRIDGE_SAMPLERS[bridge_name]:
@@ -148,4 +154,38 @@ def check_sampler_capability(sampler, bridge_agent, karras=True):
                     BRIDGE_SAMPLERS[bridge_name][iter]["no karras"]
                 )
     # logger.debug([available_samplers, sampler, sampler in available_samplers])
-    return sampler in available_samplers
+    return available_samplers
+
+
+def check_sampler_capability(sampler, bridge_agent, karras=True):
+    return sampler in get_supported_samplers(bridge_agent, karras)
+
+
+def get_supported_pp(bridge_agent):
+    bridge_name, bridge_version = parse_bridge_agent(bridge_agent)
+    if bridge_name not in BRIDGE_SAMPLERS:
+        # When it's an unknown worker agent we treat it like AI Horde Worker
+        bridge_name = "AI Horde Worker"
+        bridge_version = 23
+    available_pp = set()
+    for iter in range(bridge_version + 1):
+        if iter in BRIDGE_CAPABILITIES[bridge_name]:
+            for capability in BRIDGE_CAPABILITIES[bridge_name][iter]:
+                if capability in KNOWN_POST_PROCESSORS:
+                    available_pp.add(capability)
+    return available_pp
+
+
+def get_supported_pp(bridge_agent):
+    bridge_name, bridge_version = parse_bridge_agent(bridge_agent)
+    if bridge_name not in BRIDGE_SAMPLERS:
+        # When it's an unknown worker agent we treat it like AI Horde Worker
+        bridge_name = "AI Horde Worker"
+        bridge_version = 23
+    available_pp = set()
+    for iter in range(bridge_version + 1):
+        if iter in BRIDGE_CAPABILITIES[bridge_name]:
+            for capability in BRIDGE_CAPABILITIES[bridge_name][iter]:
+                if capability in KNOWN_POST_PROCESSORS:
+                    available_pp.add(capability)
+    return available_pp

@@ -1,4 +1,6 @@
+import copy
 import random
+
 from sqlalchemy.sql import expression
 
 from horde.logger import logger
@@ -90,7 +92,9 @@ class ImageWaitingPrompt(WaitingPrompt):
         # if any(model_name.startswith("stable_diffusion_2") for model_name in self.get_model_names()):
         #     self.params['sampler_name'] = "dpmsolver"
         # The total amount of to pixelsteps requested.
-        if self.params.get("seed") == "":
+        if "SDXL_beta::stability.ai#6901" in self.get_model_names():
+            self.seed = self.seed_to_int(self.params.get("seed"))
+        elif self.params.get("seed") == "":
             self.seed = None
         elif self.params.get("seed") is not None:
             # logger.warning([self,'seed' in params, params])
@@ -121,23 +125,34 @@ class ImageWaitingPrompt(WaitingPrompt):
         self.gen_payload["batch_size"] = 1
         self.gen_payload["ddim_steps"] = self.params["steps"]
         self.gen_payload["seed"] = self.seed
+        # If they want the seed randomized and also a seed variation, we randomize the seed in advance
+        if self.seed is None and self.seed_variation:
+            self.seed = self.seed_to_int(self.seed)
         del self.gen_payload["steps"]
         db.session.commit()
 
     @logger.catch(reraise=True)
-    def get_job_payload(self, procgen):
+    def get_job_payload(self):
+        ret_payload = copy.deepcopy(self.gen_payload)
         # If self.seed is None, we randomize the seed we send to the worker each time.
         if self.seed is None:
-            self.gen_payload["seed"] = self.seed_to_int(self.seed)
-        if self.seed_variation and self.jobs - self.n > 1:
-            self.gen_payload["seed"] += self.seed_variation
-            while self.gen_payload["seed"] >= 2**32:
-                self.gen_payload["seed"] = self.gen_payload["seed"] >> 32
-        # logger.debug([self.gen_payload["seed"],self.seed_variation])
+            ret_payload["seed"] = self.seed_to_int(self.seed)
+        elif self.seed_variation and self.jobs - self.n > 1:
+            ret_payload["seed"] = self.seed + (self.seed_variation * self.n)
+            while ret_payload["seed"] >= 2**32:
+                ret_payload["seed"] = ret_payload["seed"] >> 32
+        else:
+            ret_payload["seed"] = self.seed
         if not self.nsfw and self.censor_nsfw:
-            self.gen_payload["use_nsfw_censor"] = True
-        db.session.commit()
-        return self.gen_payload
+            ret_payload["use_nsfw_censor"] = True
+        if "SDXL_beta::stability.ai#6901" in self.get_model_names():
+            pipline_name = f"pipeline{2 - self.n}"
+            ret_payload["special"] = {
+                "model_name": pipline_name,
+                "pair_id": str(self.id),
+                "comfy_pipeline": f"{pipline_name}.json",
+            }
+        return ret_payload
 
     def get_share_metadata(self):
         """This is uploaded along with the image to the shared R2, when this WP shared"""
@@ -159,9 +174,7 @@ class ImageWaitingPrompt(WaitingPrompt):
             ret_dict["user_type"] = "pseudonymous"
         return ret_dict
 
-    def get_pop_payload(self, procgen):
-        # This prevents from sending a payload with an ID when there has been an exception inside get_job_payload()
-        payload = self.get_job_payload(procgen)
+    def get_pop_payload(self, procgen, payload):
         if payload:
             prompt_payload = {
                 "payload": payload,
@@ -270,7 +283,7 @@ class ImageWaitingPrompt(WaitingPrompt):
         ) / pow((1024 * 1024) - (64 * 64), 1.75)
         # We need to calculate the steps, without affecting the actual steps requested
         # because some samplers are effectively doubling their steps
-        steps = self.get_accurate_steps()
+        steps = self.params.get("steps")
         legacy_kudos_cost = round(
             (0.1232 * steps) + result * (0.1232 * steps * 8.75), 2
         )
@@ -293,7 +306,9 @@ class ImageWaitingPrompt(WaitingPrompt):
             model_params = self.params.copy()
             ## IMPORTANT: When adjusting this, also adjust ImageAsyncGenerate.get_hashed_params_dict()
             # That's normally not in the params
-            model_params["source_processing"] = self.source_processing
+            model_params["source_processing"] = (
+                self.source_processing if self.source_image else "txt2img"
+            )
             model_params["source_image"] = True if self.source_image else False
             model_params["source_mask"] = True if self.source_mask else False
             self.kudos = kudos_model.calculate_kudos(model_params)
@@ -310,7 +325,12 @@ class ImageWaitingPrompt(WaitingPrompt):
             logger.debug(
                 f"Kudos difference is more than 50% of the legacy cost ({legacy_kudos_cost}) for {self.id} difference={kudos_difference}"
             )
-
+        # If they're requesting LoRas, we're adding 1 extra kudos per lora requested
+        # To make up for time lost downloading
+        self.kudos += len(self.params.get("loras", []))
+        # If they've requested TIs, we add 1 kudos extra
+        if self.params.get("tis"):
+            self.kudos += 1
         db.session.commit()
         return self.kudos
 
@@ -324,13 +344,17 @@ class ImageWaitingPrompt(WaitingPrompt):
             return (True, max_res)
         if max_res < 576:
             max_res = 576
+            model_names = self.get_model_names()
             # SD 2.0 requires at least 768 to do its thing
             if (
                 max_res < 768
                 and len(self.models) >= 1
-                and "stable_diffusion_2." in self.models
+                and "stable_diffusion_2" in model_names
             ):
                 max_res = 768
+            # We allow everyone to use SDXL up to 1024
+            if max_res < 1024 and "SDXL_beta::stability.ai#6901" in model_names:
+                max_res = 1024
         if max_res > 1024:
             max_res = 1024
         if self.get_accurate_steps() > 50:
@@ -352,7 +376,7 @@ class ImageWaitingPrompt(WaitingPrompt):
             # This sampler chooses the steps amount automatically
             # and disregards the steps value from the user
             # so we just calculate it as an average 50 steps
-            return 50
+            return 40
         steps = self.params["steps"]
         if self.params.get("sampler_name", "k_euler_a") in [
             "k_heun",
@@ -380,11 +404,19 @@ class ImageWaitingPrompt(WaitingPrompt):
             self.job_ttl = 260
         elif self.width * self.height >= 512 * 512:
             self.job_ttl = 150
+        # When too many steps are involved, we increase the expiry time
+        if self.get_accurate_steps() >= 200:
+            self.job_ttl = self.job_ttl * 3
+        elif self.get_accurate_steps() >= 100:
+            self.job_ttl = self.job_ttl * 2
         # CN is 3 times slower
         if self.gen_payload.get("control_type"):
             self.job_ttl = self.job_ttl * 3
         weights_count = count_parentheses(self.prompt)
         self.job_ttl += 3 * weights_count
+        if "SDXL_beta::stability.ai#6901" in self.get_model_names():
+            logger.debug(self.get_model_names())
+            self.job_ttl = 300
         # logger.info([weights_count,self.job_ttl])
         db.session.commit()
 
@@ -400,3 +432,9 @@ class ImageWaitingPrompt(WaitingPrompt):
         ret_dict = super().get_status(**kwargs)
         ret_dict["shared"] = self.shared
         return ret_dict
+
+    def get_generations(self):
+        generations = super().get_generations()
+        if "SDXL_beta::stability.ai#6901" in self.get_model_names():
+            random.shuffle(generations)
+        return generations
