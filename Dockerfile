@@ -1,8 +1,8 @@
 # Use a slim base image for Python 3.10
-FROM python:3.10-slim
+FROM python:3.10-slim-buster
 
 # Install Git
-#RUN apt update && apt install -y git
+RUN apt-get update && apt-get install -y git
 
 # Set the working directory
 WORKDIR /app
