@@ -2,7 +2,7 @@
 FROM python:3.10-slim
 
 # Install Git
-RUN apt update && apt install -y git
+#RUN apt update && apt install -y git
 
 # Set the working directory
 WORKDIR /app
