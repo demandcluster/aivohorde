@@ -10,7 +10,7 @@ WORKDIR /app
 # Copy the source code to the container
 COPY . /app
 
-# Install the dependencies
+# Install the dependencies 
 RUN pip install --no-cache-dir --prefer-binary -r requirements.txt
 
 # Set the environment variables
