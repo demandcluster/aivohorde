@@ -35,8 +35,8 @@ class TextWorker(Worker):
         "polymorphic_identity": "text_worker",
     }
     # TODO: Switch to max_power
-    max_length = db.Column(db.Integer, default=80, nullable=False)
-    max_context_length = db.Column(db.Integer, default=1024, nullable=False)
+    max_length =  db.Column(db.Integer, default=180, nullable=False)
+    max_context_length = db.Column(db.Integer, default=4096, nullable=False)
 
     softprompts = db.relationship(
         "TextWorkerSoftprompts", back_populates="worker", cascade="all, delete-orphan"
