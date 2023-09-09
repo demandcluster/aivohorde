@@ -104,14 +104,14 @@ class TextModels(v2.Models):
                     description="Output formatting option. When enabled, removes some characters from the end of the output such that the output doesn't end in the middle of a sentence. If the output is less than one sentence long, does nothing.",
                 ),
                 "max_context_length": fields.Integer(
-                    min=80,
-                    default=1024,
+                    min=180,
+                    default=4096,
                     description="Maximum number of tokens to send to the model.",
                 ),
                 "max_length": fields.Integer(
                     min=16,
                     max=512,
-                    default=80,
+                    default=180,
                     description="Number of tokens to generate.",
                 ),
                 "rep_pen": fields.Float(
