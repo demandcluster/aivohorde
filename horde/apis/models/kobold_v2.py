@@ -32,7 +32,7 @@ class TextParsers(v2.Parsers):
             "max_context_length",
             type=int,
             required=False,
-            default=2048,
+            default=4096,
             help="The max amount of context to submit to this AI for sampling.",
             location="json",
         )
