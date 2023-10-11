@@ -3,19 +3,33 @@ from datetime import datetime
 class News:
 
     HORDE_NEWS = [
-        # {
-        #     "date_published": "2023-08-25",
-        #     "newspiece": 
-        #         "Textual Inversions support has now been merged into the main worker branch! "
-        #         "Read the [devlog](https://dbzer0.com)",
-        #     "tags": ["devlog", "TI", "text2img"],
-        #     "importance": "Workers",
-        # },
+        {
+            "date_published": "2023-09-03",
+            "newspiece": 
+                "The AI Horde is officially [one year old!](https://dbzer0.com/blog/year-one-of-the-ai-horde/)",
+            "tags": ["devlog"],
+            "importance": "Information",
+        },
+        {
+            "date_published": "2023-08-30",
+            "newspiece": 
+                "Textual Inversions support has now been merged into the main worker branch! "
+                "Read the [devlog](https://dbzer0.com/blog/the-ai-horde-now-seamlessly-provides-all-civitai-textual-inversions/)",
+            "tags": ["devlog", "TI", "text2img"],
+            "importance": "Information",
+        },
         {
             "date_published": "2023-07-23",
             "newspiece": 
                 "Join our [Lemmy Community](https://lemmy.dbzer0.com/c/aihorde).",
             "tags": ["lemmy"],
+            "importance": "Information",
+        },
+        {
+            "date_published": "2023-07-04",
+            "newspiece": 
+                "New [State of the AI Horde](https://dbzer0.com/blog/state-of-the-ai-horde-july-2023/) is out!",
+            "tags": ["state of the ai horde"],
             "importance": "Information",
         },
         {

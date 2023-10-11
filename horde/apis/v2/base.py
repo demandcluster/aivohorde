@@ -171,6 +171,7 @@ class GenerateTemplate(Resource):
         So we need the logic of each GenerateTemplate class to be able to override this class to adjust the params dict accordingly.
         '''
         gen_payload = self.params.copy()
+        gen_payload["models"] = self.models
         params_hash = hash_dictionary(gen_payload)
         return params_hash
 
@@ -231,7 +232,9 @@ class GenerateTemplate(Resource):
             prompt_replaced = False
             if prompt_suspicion >= 2 and self.gentype != "text":
                 # if replacement filter mode is enabled AND prompt is short enough, do that instead
-                if self.args.replacement_filter and prompt_checker.check_prompt_replacement_length(self.args.prompt):
+                if self.args.replacement_filter:
+                    if not prompt_checker.check_prompt_replacement_length(self.args.prompt):
+                        raise e.BadRequest("Prompt has to be below 1000 chars when replacement filter is on")
                     self.args.prompt = prompt_checker.apply_replacement_filter(self.args.prompt)
                     # If it returns None, it means it replaced everything with an empty string
                     if self.args.prompt is not None:
@@ -511,7 +514,7 @@ class JobSubmitTemplate(Resource):
 
     def set_generation(self):
         '''Set to its own function to it can be overwritten depending on the class'''
-        things_per_sec = stats.record_fulfilment(self.procgen)
+        things_per_sec = stats.record_fulfilment(self.procgen,self.procgen.get_things_count(self.args['generation']))
         self.kudos = self.procgen.set_generation(
             generation=self.args['generation'], 
             things_per_sec=things_per_sec, 
@@ -1772,7 +1775,10 @@ class SharedKeySingle(Resource):
             raise e.InvalidAPIKey("patch sharedkey")
         if sharedkey.user_id != user.id:
             raise e.Forbidden(f"Shared Key {sharedkey.id} belongs to {sharedkey.user.get_unique_alias()} and not to {user.get_unique_alias()}.")
-        if not self.args.expiry and not self.args.kudos and not self.arg.name:
+        no_valid_actions = self.args.expiry is None and self.args.kudos is None and self.args.name is None
+        no_valid_limit_actions = self.args.max_image_pixels is None and self.args.max_image_steps is None and self.args.max_text_tokens is None
+
+        if no_valid_actions and no_valid_limit_actions:
             raise e.NoValidActions("No shared key modification selected!")
         if self.args.expiry is not None:
             if self.args.expiry == -1:

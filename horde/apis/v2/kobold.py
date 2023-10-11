@@ -26,7 +26,7 @@ class TextAsyncGenerate(GenerateTemplate):
         description="Generation Queued",
         skip_none=True,
     )
-    @api.response(400, "Validation Error", models.response_model_error)
+    @api.response(400, "Validation Error", models.response_model_validation_errors)
     @api.response(401, "Invalid API Key", models.response_model_error)
     @api.response(503, "Maintenance Mode", models.response_model_error)
     @api.response(429, "Too Many Prompts", models.response_model_error)
@@ -40,7 +40,7 @@ class TextAsyncGenerate(GenerateTemplate):
         self.args = parsers.generate_parser.parse_args()
         try:
             super().post()
-        except KeyError:
+        except KeyError as err:
             logger.error(f"caught missing Key.")
             logger.error(self.args)
             logger.error(self.args.params)
@@ -86,7 +86,11 @@ class TextAsyncGenerate(GenerateTemplate):
             required_kudos = (
                 round(self.wp.max_length * highest_multiplier / 21, 2) * self.wp.n
             )
-        if self.sharedkey and required_kudos > self.sharedkey.kudos:
+        if (
+            self.sharedkey
+            and self.sharedkey.kudos != -1
+            and required_kudos > self.sharedkey.kudos
+        ):
             raise e.KudosUpfront(
                 required_kudos,
                 self.username,
@@ -113,13 +117,29 @@ class TextAsyncGenerate(GenerateTemplate):
     def get_size_too_big_message(self):
         return "Warning: No available workers can fulfill this request. It will expire in 20 minutes. Consider reducing the amount of tokens to generate."
 
+    def validate(self):
+        super().validate()
+        if self.params.get("max_context_length", 1024) < self.params.get(
+            "max_length", 80
+        ):
+            raise e.BadRequest(
+                "You cannot request more tokens than your context length."
+            )
+        if (
+            "sampler_order" in self.params
+            and len(set(self.params["sampler_order"])) < 7
+        ):
+            raise e.BadRequest(
+                "When sending a custom sampler order, you need to specify all possible samplers in the order"
+            )
+
     def get_hashed_params_dict(self):
         gen_payload = self.params.copy()
         ## IMPORTANT: When adjusting this, also adjust TextWaitingPrompt.calculate_kudos()
         # We need to also use the model list into our hash, as our kudos calculation is based on whichever model is first
         gen_payload["models"] = self.args.models
         params_hash = hash_dictionary(gen_payload)
-        logger.debug([params_hash, gen_payload])
+        # logger.debug([params_hash,gen_payload])
         return params_hash
 
 

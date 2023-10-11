@@ -17,6 +17,7 @@ from horde.r2 import (
 )
 from horde.flask import db
 from horde.image import convert_b64_to_pil, convert_pil_to_b64
+from horde.model_reference import model_reference
 
 
 class ImageProcessingGeneration(ProcessingGeneration):
@@ -51,6 +52,8 @@ class ImageProcessingGeneration(ProcessingGeneration):
 
     def get_gen_kudos(self):
         # We have pre-calculated them as they don't change per worker
+        if model_reference.get_model_baseline(self.model) == "stable_diffusion_xl":
+            return self.wp.kudos * 2
         return self.wp.kudos
 
     def log_aborted_generation(self):

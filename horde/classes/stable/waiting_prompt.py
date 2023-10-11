@@ -17,6 +17,7 @@ from horde.image import convert_pil_to_b64
 from horde.bridge_reference import check_bridge_capability
 from horde.consts import KNOWN_POST_PROCESSORS
 from horde.classes.stable.kudos import KudosModel
+from horde.model_reference import model_reference
 
 
 class ImageWaitingPrompt(WaitingPrompt):
@@ -137,7 +138,7 @@ class ImageWaitingPrompt(WaitingPrompt):
         # If self.seed is None, we randomize the seed we send to the worker each time.
         if self.seed is None:
             ret_payload["seed"] = self.seed_to_int(self.seed)
-        elif self.seed_variation and self.jobs - self.n > 1:
+        elif self.seed_variation:
             ret_payload["seed"] = self.seed + (self.seed_variation * self.n)
             while ret_payload["seed"] >= 2**32:
                 ret_payload["seed"] = ret_payload["seed"] >> 32
@@ -344,17 +345,19 @@ class ImageWaitingPrompt(WaitingPrompt):
             return (True, max_res)
         if max_res < 576:
             max_res = 576
-            model_names = self.get_model_names()
-            # SD 2.0 requires at least 768 to do its thing
-            if (
-                max_res < 768
-                and len(self.models) >= 1
-                and "stable_diffusion_2" in model_names
-            ):
-                max_res = 768
-            # We allow everyone to use SDXL up to 1024
-            if max_res < 1024 and "SDXL_beta::stability.ai#6901" in model_names:
-                max_res = 1024
+        model_names = self.get_model_names()
+        # SD 2.0 requires at least 768 to do its thing
+        if (
+            max_res < 768
+            and len(self.models) >= 1
+            and "stable_diffusion_2" in model_names
+        ):
+            max_res = 768
+        # We allow everyone to use SDXL up to 1024
+        if max_res < 1024 and any(
+            mn in model_names for mn in ["SDXL_beta::stability.ai#6901", "SDXL 1.0"]
+        ):
+            max_res = 1024
         if max_res > 1024:
             max_res = 1024
         if self.get_accurate_steps() > 50:
@@ -438,3 +441,14 @@ class ImageWaitingPrompt(WaitingPrompt):
         if "SDXL_beta::stability.ai#6901" in self.get_model_names():
             random.shuffle(generations)
         return generations
+
+    def extrapolate_dry_run_kudos(self):
+        kudos = self.calculate_kudos()
+        if len(self.models) > 0:
+            model_name = self.models[0].model
+        else:
+            model_name = "SDXL 1.0"
+        if model_reference.get_model_baseline(model_name) == "stable_diffusion_xl":
+            return (self.calculate_extra_kudos_burn(kudos) * self.n * 2) + 1
+        # The +1 is the extra kudos burn per request
+        return (self.calculate_extra_kudos_burn(kudos) * self.n) + 1

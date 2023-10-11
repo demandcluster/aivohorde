@@ -16,12 +16,12 @@ if not args.check_prompts:
 interrogations_cleaner = PrimaryTimedFunction(
     60, threads.check_interrogations, quorum=quorum
 )
-monthly_kudos = PrimaryTimedFunction(40000, threads.assign_monthly_kudos, quorum=quorum)
-totals_store = PrimaryTimedFunction(60, threads.store_totals, quorum=quorum)
-prune_stats = PrimaryTimedFunction(60, threads.prune_stats, quorum=quorum)
 patreon_cacher = PrimaryTimedFunction(
     3600, threads.store_patreon_members, quorum=quorum
 )
+monthly_kudos = PrimaryTimedFunction(3600, threads.assign_monthly_kudos, quorum=quorum)
+totals_store = PrimaryTimedFunction(60, threads.store_totals, quorum=quorum)
+prune_stats = PrimaryTimedFunction(60, threads.prune_stats, quorum=quorum)
 priority_increaser = PrimaryTimedFunction(
     10, threads.increment_extra_priority, quorum=quorum
 )

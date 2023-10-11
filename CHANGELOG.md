@@ -1,5 +1,54 @@
 # Changelog
 
+# 4.18.9
+
+* SDXL gens now costs double kudos
+* Dry run for LLMs should now be more accurate
+* Unreasonably fast speed for LLMs increased to 150t/s
+* For LLMs Kudos rewards, the system will now use the returned generation token count. The tokens count used will be either (generation chars / 4) or max tokens requested, whichever is lower.
+* Avoid textgen dry_run crashing when model list is empty
+
+# 4.18.8
+
+* Fix seed variation ending with duplicate seeds
+
+# 4.18.7
+
+* Fix source image rer-uploads not working
+
+# 4.18.6
+
+* Re-enable LoRas and TIs for reGen
+
+# 4.18.5
+
+* Support for AI Horde Worker reGen and its SDXL features
+
+# 4.18.4
+
+* API Now shows that you can get details of validation errors in the "errors" key
+
+# 4.18.4
+
+* Prevent Scribe requests failing when max_length and max_context_length missing
+* Made checking for monthly kudos an hourly task
+* shared key limit func now checks correct variable for `None` (@tazlin)
+
+# 4.18.3
+
+* Shared key with 0 kudos as a limit now correctly treats that field as disabled. (e.g., `max_image_pixels: 0`` means no image generation for that shared key.)
+
+# 4.18.2
+
+* Shared key with -1 kudos (infinite) now works for Text Gen
+* LoRa clip strength now can also go to -5
+* Added some extra validation for KoboldAI Payloads
+
+# 4.18.1
+
+* Returns 400 when replacement filter is on and prompt is > 1000 chars
+* Added `use_default_badwordsids` parameter for Textgen
+
 # 4.18.0
 
 * Added support for TIs in payloads for SD

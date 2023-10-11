@@ -41,12 +41,12 @@ class TextProcessingGeneration(ProcessingGeneration):
             if not self.worker.user.trusted:
                 return context_multiplier
             # Trusted users with an unknown model gain 1 per token requested, as we don't know their parameters amount
-            return self.wp.max_length * 0.12 * context_multiplier
+            return self.get_things_count() * 0.10 * context_multiplier
         # This is the approximate reward for generating with a 2.7 model at 4bit
         kudos = (
-            self.wp.max_length
+            self.get_things_count()
             * model_reference.get_text_model_multiplier(self.model)
-            / 84
+            / 100
         )
         return round(kudos * context_multiplier, 2)
 
@@ -54,7 +54,7 @@ class TextProcessingGeneration(ProcessingGeneration):
         record_text_statistic(self)
         logger.info(
             f"Aborted Stale Generation {self.id} of wp {str(self.wp_id)} "
-            f"(for {self.wp.max_length} tokens and {self.wp.max_context_length} content length) "
+            f"(for {self.get_things_count()} tokens and {self.wp.max_context_length} content length) "
             f" from by worker: {self.worker.name} ({self.worker.id})"
         )
 
@@ -71,3 +71,16 @@ class TextProcessingGeneration(ProcessingGeneration):
         kudos = super().set_generation(generation, things_per_sec, **kwargs)
         record_text_statistic(self)
         return kudos
+
+    def get_things_count(self, generation=None):
+        if generation is None:
+            if self.generation is None:
+                return 0
+            generation = self.generation
+        quick_token_count = math.ceil(len(generation) / 4)
+        if quick_token_count < 20:
+            quick_token_count = 20
+        if self.wp.things > quick_token_count:
+            # logger.debug([self.wp.things,quick_token_count])
+            return quick_token_count
+        return self.wp.things

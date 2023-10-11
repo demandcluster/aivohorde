@@ -36,7 +36,7 @@ class ImageAsyncGenerate(GenerateTemplate):
         description="Generation Queued",
         skip_none=True,
     )
-    @api.response(400, "Validation Error", models.response_model_error)
+    @api.response(400, "Validation Error", models.response_model_validation_errors)
     @api.response(401, "Invalid API Key", models.response_model_error)
     @api.response(503, "Maintenance Mode", models.response_model_error)
     @api.response(429, "Too Many Prompts", models.response_model_error)
@@ -127,6 +127,11 @@ class ImageAsyncGenerate(GenerateTemplate):
         #    raise e.UnsupportedModel("This feature is disabled for the moment.")
         if "control_type" in self.params and not self.args.source_image:
             raise e.UnsupportedModel("Controlnet Requires a source image.")
+        if any(model_name in ["SDXL 1.0"] for model_name in self.args.models):
+            if self.params.get("hires_fix", False) is True:
+                raise e.BadRequest("hires fix does not work with SDXL currently.")
+            if "control_type" in self.params:
+                raise e.BadRequest("ControlNet does not work with SDXL currently.")
         if "loras" in self.params and len(self.params["loras"]) > 5:
             raise e.BadRequest("You cannot request more than 5 loras per generation.")
         if "tis" in self.params and len(self.params["tis"]) > 20:
@@ -272,6 +277,7 @@ class ImageAsyncGenerate(GenerateTemplate):
     def get_hashed_params_dict(self):
         gen_payload = self.params.copy()
         ## IMPORTANT: When adjusting this, also adjust ImageWaitingPrompt.calculate_kudos()
+        gen_payload["models"] = self.args.models
         gen_payload["source_processing"] = self.args.source_processing
         if not self.args.source_image:
             gen_payload["source_processing"] = "txt2img"
