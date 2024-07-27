@@ -679,7 +679,6 @@ class Aesthetics(Resource):
         "ratings", type=list, required=False, default=False, location="json"
     )
 
-    decorators = [limiter.limit("5/minute", key_func=get_request_path)]
 
     decorators = [limiter.limit("5/minute", key_func=lim.get_request_path)]
 
