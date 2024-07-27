@@ -1,8 +1,8 @@
-from horde.threads import PrimaryTimedFunction
-from horde.database.classes import Quorum
 import horde.database.threads as threads
 from horde.argparser import args
+from horde.database.classes import Quorum
 from horde.logger import logger
+from horde.threads import PrimaryTimedFunction
 
 # Threads
 quorum = Quorum(1, threads.get_quorum)
@@ -22,15 +22,10 @@ patreon_cacher = PrimaryTimedFunction(
 monthly_kudos = PrimaryTimedFunction(3600, threads.assign_monthly_kudos, quorum=quorum)
 totals_store = PrimaryTimedFunction(60, threads.store_totals, quorum=quorum)
 prune_stats = PrimaryTimedFunction(60, threads.prune_stats, quorum=quorum)
-priority_increaser = PrimaryTimedFunction(
-    10, threads.increment_extra_priority, quorum=quorum
-)
-compiled_filter_cacher = PrimaryTimedFunction(
-    10, threads.store_compiled_filter_regex, quorum=quorum
-)
-regex_replacements_cacher = PrimaryTimedFunction(
-    10, threads.store_compiled_filter_regex_replacements, quorum=quorum
-)
+priority_increaser = PrimaryTimedFunction(10, threads.increment_extra_priority, quorum=quorum)
+compiled_filter_cacher = PrimaryTimedFunction(10, threads.store_compiled_filter_regex, quorum=quorum)
+regex_replacements_cacher = PrimaryTimedFunction(10, threads.store_compiled_filter_regex_replacements, quorum=quorum)
+known_image_models_cacher = PrimaryTimedFunction(300, threads.store_known_image_models, quorum=quorum)
 
 if args.reload_all_caches:
     logger.info("store_prioritized_wp_queue()")
@@ -47,6 +42,8 @@ if args.reload_all_caches:
     threads.store_compiled_filter_regex_replacements()
     logger.info("store_available_models()")
     threads.store_available_models()
+    logger.info("store_known_image_models()")
+    threads.store_known_image_models()
 
 
 if args.check_prompts:

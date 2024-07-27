@@ -1,16 +1,12 @@
-import random
 import math
+import os
+
 from sqlalchemy.sql import expression
-from horde.logger import logger
+
 from horde import vars as hv
-from horde.flask import db
 from horde.classes.base.waiting_prompt import WaitingPrompt
-from horde.r2 import (
-    generate_procgen_upload_url,
-    download_source_image,
-    download_source_mask,
-)
-from horde.bridge_reference import check_bridge_capability
+from horde.flask import db
+from horde.logger import logger
 from horde.model_reference import model_reference
 
 
@@ -48,9 +44,7 @@ class TextWaitingPrompt(WaitingPrompt):
         # To avoid unnecessary calculations, we do it once here.
         self.things = self.max_length
         # The total amount of to pixelsteps requested.
-        self.total_usage = round(
-            self.max_length * self.n / hv.thing_divisors["text"], 2
-        )
+        self.total_usage = round(self.max_length * self.n / hv.thing_divisors["text"], 2)
         self.softprompt = kwargs.get("softprompt")
         self.prepare_job_payload(self.params)
 
@@ -64,12 +58,16 @@ class TextWaitingPrompt(WaitingPrompt):
         self.gen_payload["n"] = 1
         db.session.commit()
 
-    def activate(self, source_image=None, source_mask=None):
+    def activate(self, downgrade_wp_priority=False, source_image=None, source_mask=None, extra_source_images=None):
         # We separate the activation from __init__ as often we want to check if there's a valid worker for it
         # Before we add it to the queue
-        super().activate()
+        super().activate(downgrade_wp_priority, extra_source_images=extra_source_images)
+        proxied_account = ""
+        if self.proxied_account:
+            proxied_account = f":{self.proxied_account}"
         logger.info(
-            f"New text2text prompt with ID {self.id} by {self.user.get_unique_alias()}: token:{self.max_length} * n:{self.n} == {self.total_usage} Total Tokens"
+            f"New text2text prompt with ID {self.id} by {self.user.get_unique_alias()}{proxied_account}: "
+            f"max_length:{self.max_length} * n:{self.n} == {self.total_usage} Total Tokens",
         )
 
     def calculate_extra_kudos_burn(self, kudos):
@@ -81,7 +79,7 @@ class TextWaitingPrompt(WaitingPrompt):
         if self.source_image:
             source_processing = self.source_processing
         logger.warning(
-            f"Faulting waiting {source_processing} prompt {self.id} with payload '{self.gen_payload}' due to too many faulted jobs"
+            f"Faulting waiting {source_processing} prompt {self.id} with payload '{self.gen_payload}' due to too many faulted jobs",
         )
 
     def get_status(self, **kwargs):
@@ -93,27 +91,45 @@ class TextWaitingPrompt(WaitingPrompt):
         super().record_usage(raw_things, kudos, usage_type)
 
     def require_upfront_kudos(self, counted_totals, total_threads):
-        """Returns True if this wp requires that the user already has the required kudos to fulfil it
-        else returns False
+        """Returns A tuple
+        First entry in the tuple is True if this wp requires that the user already has the required kudos to fulfil it
+        else is False
+        Second entry in the tuple is the max tokens that can be used without upfront kudos
+        Third entry in the tuple is whether the upfront kudos requirement prevents downgrading to resolve this.
         """
         queue = counted_totals["queued_text_requests"]
         max_tokens = 512 + (total_threads * 5) - round(queue * 0.9)
         # logger.debug([queue,max_tokens])
         if not self.slow_workers:
-            return (True, max_tokens)
+            return (True, max_tokens, False)
         if max_tokens < 256:
             max_tokens = 256
         if max_tokens > 512:
             max_tokens = 512
         if self.max_length > max_tokens:
-            return (True, max_tokens)
-        return (False, max_tokens)
+            return (True, max_tokens, False)
+        if os.getenv("HORDE_UPFRONT_KUDOS_ON_WORKERLIST", "0") == "1" and len(self.workers) > 0:
+            return (True, max_tokens, True)
+        return (False, max_tokens, False)
+
+    def downgrade(self, max_tokens):
+        """Ensures this WP requirements are not exceeding upfront kudos requirements"""
+        self.slow_workers = True
+        while self.max_length > max_tokens:
+            self.max_length = max_tokens
+            self.params["max_length"] = self.max_length
+            self.gen_payload["max_length"] = self.max_length
+            logger.info(f"Text WP {self.id} was downgraded to {self.max_length} tokens")
+        db.session.commit()
 
     def calculate_kudos(self):
+        if os.getenv("HORDE_REQUIRE_MATCHED_TARGETING", "0") == "1" and len(self.workers) > 0:
+            self.kudos = 0.1
+            return self.kudos
         # Slimmed down version of procgen.get_gen_kudos()
         # As we don't know the worker's trusted status.
         # It exists here in order to allow us to calculate dry_runs
-        context_multiplier = 2.5 ** (math.log2(self.max_context_length / 1024))
+        context_multiplier = 1.2 + (2.2 ** (math.log2(self.max_context_length / 1024)))
         # Prevent shenanigans
         if context_multiplier > 30:
             context_multiplier = 30
@@ -123,14 +139,13 @@ class TextWaitingPrompt(WaitingPrompt):
             model_name = self.models[0].model
         else:
             # For empty model lists, we assume they're going to run into a 13B model
-            return round(self.max_length * 13 * context_multiplier / 84, 2)
+            return round(self.max_length * 13 * context_multiplier / 100, 2)
         if not model_reference.is_known_text_model(model_name):
-            return self.wp.max_length * 0.12 * context_multiplier
+            return self.wp.max_length * (2.7 / 100) * context_multiplier
+        model_multiplier = model_reference.get_text_model_multiplier(model_name)
+        parameter_bonus = (max(model_multiplier, 13) / 13) ** 0.20
         self.kudos = round(
-            self.max_length
-            * model_reference.get_text_model_multiplier(model_name)
-            * context_multiplier
-            / 84,
+            self.max_length * parameter_bonus * model_multiplier * context_multiplier / 100,
             2,
         )
         return self.kudos

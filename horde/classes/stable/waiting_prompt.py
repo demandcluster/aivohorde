@@ -1,23 +1,30 @@
 import copy
+import os
 import random
 
 from sqlalchemy.sql import expression
 
-from horde.logger import logger
 from horde import vars as hv
-from horde.flask import db
-from horde.utils import get_random_seed, count_parentheses
+from horde.bridge_reference import check_bridge_capability
 from horde.classes.base.waiting_prompt import WaitingPrompt
+from horde.classes.stable.kudos import KudosModel
+from horde.consts import (
+    HEAVY_POST_PROCESSORS,
+    KNOWN_LCM_LORA_IDS,
+    KNOWN_LCM_LORA_VERSIONS,
+    KNOWN_POST_PROCESSORS,
+    SECOND_ORDER_SAMPLERS,
+)
+from horde.flask import db
+from horde.image import convert_pil_to_b64
+from horde.logger import logger
+from horde.model_reference import model_reference
 from horde.r2 import (
-    generate_procgen_upload_url,
     download_source_image,
     download_source_mask,
+    generate_procgen_upload_url,
 )
-from horde.image import convert_pil_to_b64
-from horde.bridge_reference import check_bridge_capability
-from horde.consts import KNOWN_POST_PROCESSORS
-from horde.classes.stable.kudos import KudosModel
-from horde.model_reference import model_reference
+from horde.utils import get_random_seed
 
 
 class ImageWaitingPrompt(WaitingPrompt):
@@ -25,16 +32,10 @@ class ImageWaitingPrompt(WaitingPrompt):
         "polymorphic_identity": "image",
     }
     # TODO: Find a way to index width*height
-    width = db.Column(
-        db.Integer, default=512, nullable=False, server_default=expression.literal(512)
-    )
-    height = db.Column(
-        db.Integer, default=512, nullable=False, server_default=expression.literal(512)
-    )
+    width = db.Column(db.Integer, default=512, nullable=False, server_default=expression.literal(512))
+    height = db.Column(db.Integer, default=512, nullable=False, server_default=expression.literal(512))
     source_image = db.Column(db.Text, default=None)
-    source_processing = db.Column(
-        db.String(10), default="img2img", nullable=False, server_default="img2img"
-    )
+    source_processing = db.Column(db.String(10), default="img2img", nullable=False, server_default="img2img")
     source_mask = db.Column(db.Text, default=None)
     censor_nsfw = db.Column(
         db.Boolean,
@@ -103,7 +104,8 @@ class ImageWaitingPrompt(WaitingPrompt):
         if "seed_variation" in self.params:
             self.seed_variation = self.params.pop("seed_variation")
             # I set the seed_to_int now, because it's anyway going to be incremented by the seed_variation
-            # I am not doing it in get_job_payload() because there seems to be a race condition in where even though I set self.gen_payload["seed"] to seed_to_int()
+            # I am not doing it in get_job_payload() because there seems to be a race condition
+            # in where even though I set self.gen_payload["seed"] to seed_to_int()
             # It then crashes in self.gen_payload["seed"] += self.seed_variation trying to None + Int
             if self.seed is None:
                 self.seed = self.seed_to_int(self.seed)
@@ -111,6 +113,12 @@ class ImageWaitingPrompt(WaitingPrompt):
         # logger.debug([self.prompt,self.params['width'],self.params['sampler_name']])
         self.things = self.width * self.height * self.get_accurate_steps()
         self.total_usage = round(self.things * self.n / hv.thing_divisors["image"], 2)
+        # Education accounts get some settings hardcoded regardless of the request
+        if self.user.education:
+            self.nsfw = False
+            self.censor_nsfw = True
+            self.trusted_workers = True
+            self.shared = False
         self.prepare_job_payload(self.params)
         self.set_job_ttl()
         # Commit will happen in prepare_job_payload()
@@ -133,13 +141,13 @@ class ImageWaitingPrompt(WaitingPrompt):
         db.session.commit()
 
     @logger.catch(reraise=True)
-    def get_job_payload(self):
+    def get_job_payload(self, current_n):
         ret_payload = copy.deepcopy(self.gen_payload)
         # If self.seed is None, we randomize the seed we send to the worker each time.
         if self.seed is None:
             ret_payload["seed"] = self.seed_to_int(self.seed)
         elif self.seed_variation:
-            ret_payload["seed"] = self.seed + (self.seed_variation * self.n)
+            ret_payload["seed"] = self.seed + (self.seed_variation * current_n)
             while ret_payload["seed"] >= 2**32:
                 ret_payload["seed"] = ret_payload["seed"] >> 32
         else:
@@ -147,7 +155,7 @@ class ImageWaitingPrompt(WaitingPrompt):
         if not self.nsfw and self.censor_nsfw:
             ret_payload["use_nsfw_censor"] = True
         if "SDXL_beta::stability.ai#6901" in self.get_model_names():
-            pipline_name = f"pipeline{2 - self.n}"
+            pipline_name = f"pipeline{2 - current_n}"
             ret_payload["special"] = {
                 "model_name": pipline_name,
                 "pair_id": str(self.id),
@@ -175,12 +183,16 @@ class ImageWaitingPrompt(WaitingPrompt):
             ret_dict["user_type"] = "pseudonymous"
         return ret_dict
 
-    def get_pop_payload(self, procgen, payload):
+    def get_pop_payload(self, procgen_list, payload):
         if payload:
+            # They're all the same, so we pick up the first to extract some var
+            procgen = procgen_list[0]
+            payload["n_iter"] = len(procgen_list)
             prompt_payload = {
                 "payload": payload,
                 "id": procgen.id,
                 "model": procgen.model,
+                "ids": [g.id for g in procgen_list],
             }
             if self.source_image and check_bridge_capability(
                 "img2img", procgen.worker.bridge_agent
@@ -200,14 +212,13 @@ class ImageWaitingPrompt(WaitingPrompt):
                     else:
                         src_msk = download_source_mask(self.id)
                         if src_msk:
-                            prompt_payload["source_mask"] = convert_pil_to_b64(
-                                src_msk, 50
-                            )
+                            prompt_payload["source_mask"] = convert_pil_to_b64(src_msk, 50)
+            if self.extra_source_images and check_bridge_capability("extra_source_images", procgen.worker.bridge_agent):
+                prompt_payload["extra_source_images"] = self.extra_source_images["esi"]
             # We always ask the workers to upload the generation to R2 instead of sending it back as b64
             # If they send it back as b64 anyway, we upload it outselves
-            prompt_payload["r2_upload"] = generate_procgen_upload_url(
-                str(procgen.id), self.shared
-            )
+            prompt_payload["r2_upload"] = generate_procgen_upload_url(str(procgen.id), self.shared)
+            prompt_payload["r2_uploads"] = [generate_procgen_upload_url(str(p.id), self.shared) for p in procgen_list]
         else:
             prompt_payload = {}
             self.faulted = True
@@ -215,10 +226,10 @@ class ImageWaitingPrompt(WaitingPrompt):
         # logger.debug([payload,prompt_payload])
         return prompt_payload
 
-    def activate(self, source_image=None, source_mask=None):
+    def activate(self, downgrade_wp_priority=False, source_image=None, source_mask=None, extra_source_images=None):
         # We separate the activation from __init__ as often we want to check if there's a valid worker for it
         # Before we add it to the queue
-        super().activate()
+        super().activate(downgrade_wp_priority, extra_source_images=extra_source_images)
         if source_image or source_mask:
             self.source_image = source_image
             self.source_mask = source_mask
@@ -227,13 +238,18 @@ class ImageWaitingPrompt(WaitingPrompt):
         if self.source_image:
             prompt_type = self.source_processing
         self.calculate_kudos()
+        proxied_account = ""
+        if self.proxied_account:
+            proxied_account = f":{self.proxied_account}"
         logger.info(
-            f"New {prompt_type} prompt with ID {self.id} by {self.user.get_unique_alias()} ({self.ipaddr}) ({self.client_agent}): "
-            f"w:{self.width} * h:{self.height} * s:{self.params['steps']} * n:{self.n} == {self.total_usage} Total MPs. "
+            f"New {prompt_type} prompt with ID {self.id} by {self.user.get_unique_alias()}{proxied_account} "
+            f"({self.ipaddr}) ({self.client_agent}): "
+            f"w:{self.width} * h:{self.height} * s:{self.get_accurate_steps()} * n:{self.n} "
+            f"== {self.total_usage} Total MPs for {self.kudos} kudos.",
         )
 
     def seed_to_int(self, s=None):
-        if type(s) is int:
+        if isinstance(s, int):
             return s
         if s is None or s == "":
             return get_random_seed(self.n)
@@ -276,28 +292,24 @@ class ImageWaitingPrompt(WaitingPrompt):
         #
         # Legacy calculation
         #
+        if os.getenv("HORDE_REQUIRE_MATCHED_TARGETING", "0") == "1" and len(self.workers) > 0:
+            self.kudos = 0.1
+            db.session.commit()
+            return self.kudos
         legacy_kudos_cost = 0
         result = pow(
-            (self.params.get("width", 512) * self.params.get("height", 512))
-            - (64 * 64),
+            (self.params.get("width", 512) * self.params.get("height", 512)) - (64 * 64),
             1.75,
         ) / pow((1024 * 1024) - (64 * 64), 1.75)
         # We need to calculate the steps, without affecting the actual steps requested
         # because some samplers are effectively doubling their steps
         steps = self.params.get("steps")
-        legacy_kudos_cost = round(
-            (0.1232 * steps) + result * (0.1232 * steps * 8.75), 2
-        )
+        legacy_kudos_cost = round((0.1232 * steps) + result * (0.1232 * steps * 8.75), 2)
         # For each post processor in requested, we increase the cost by 20%
         for post_processor in self.gen_payload.get("post_processing", []):
             legacy_kudos_cost = round(legacy_kudos_cost * 1.2, 2)
-        if self.gen_payload.get("control_type") and not self.gen_payload.get(
-            "return_control_map", False
-        ):
+        if self.gen_payload.get("control_type") and not self.gen_payload.get("return_control_map", False):
             legacy_kudos_cost = round(legacy_kudos_cost * 3, 2)
-        weights_count = count_parentheses(self.prompt)
-        ## we increase the kudos cost per weight
-        legacy_kudos_cost += weights_count
 
         #
         # Model based calculation
@@ -307,9 +319,7 @@ class ImageWaitingPrompt(WaitingPrompt):
             model_params = self.params.copy()
             ## IMPORTANT: When adjusting this, also adjust ImageAsyncGenerate.get_hashed_params_dict()
             # That's normally not in the params
-            model_params["source_processing"] = (
-                self.source_processing if self.source_image else "txt2img"
-            )
+            model_params["source_processing"] = self.source_processing if self.source_image else "txt2img"
             model_params["source_image"] = True if self.source_image else False
             model_params["source_mask"] = True if self.source_mask else False
             self.kudos = kudos_model.calculate_kudos(model_params)
@@ -318,17 +328,15 @@ class ImageWaitingPrompt(WaitingPrompt):
                 f"Error calculating kudos for {self.id}, defaulting to legacy calculation (exception): {e}"
             )
             self.kudos = legacy_kudos_cost
-        logger.debug(
-            f"Old Kudos {legacy_kudos_cost} / New Kudos {self.kudos} for {self.id}"
-        )
+        logger.debug(f"Old Kudos {legacy_kudos_cost} / New Kudos {self.kudos} for {self.id}")
         kudos_difference = abs(legacy_kudos_cost - self.kudos)
         if kudos_difference > (legacy_kudos_cost * 0.5):
             logger.debug(
-                f"Kudos difference is more than 50% of the legacy cost ({legacy_kudos_cost}) for {self.id} difference={kudos_difference}"
+                f"Kudos difference is more than 50% of the legacy cost ({legacy_kudos_cost}) for {self.id} difference={kudos_difference}",
             )
-        # If they're requesting LoRas, we're adding 1 extra kudos per lora requested
+        # If they're requesting LoRas, we're adding 3 extra kudos per lora requested
         # To make up for time lost downloading
-        self.kudos += len(self.params.get("loras", []))
+        self.kudos += len(self.params.get("loras", [])) * 3
         # If they've requested TIs, we add 1 kudos extra
         if self.params.get("tis"):
             self.kudos += 1
@@ -336,13 +344,16 @@ class ImageWaitingPrompt(WaitingPrompt):
         return self.kudos
 
     def require_upfront_kudos(self, counted_totals, total_threads):
-        """Returns True if this wp requires that the user already has the required kudos to fulfil it
-        else returns False
+        """Returns A tuple
+        First entry in the tuple is True if this wp requires that the user already has the required kudos to fulfil it
+        else is False
+        Second entry in the tuple is the max resolution that can be used without upfront kudos
+        Third entry in the tuple is whether the upfront kudos requirement prevents downgrading to resolve this.
         """
         queue = counted_totals["queued_requests"]
         max_res = 1024 + (total_threads * 10) - round(queue * 0.9)
         if not self.slow_workers:
-            return (True, max_res)
+            return (True, max_res, False)
         if max_res < 576:
             max_res = 576
         model_names = self.get_model_names()
@@ -350,29 +361,77 @@ class ImageWaitingPrompt(WaitingPrompt):
         if (
             max_res < 768
             and len(self.models) >= 1
-            and "stable_diffusion_2" in model_names
+            and any(model_reference.get_model_baseline(mn) == "stable_diffusion_2" for mn in model_names)
         ):
             max_res = 768
         # We allow everyone to use SDXL up to 1024
         if max_res < 1024 and any(
-            mn in model_names for mn in ["SDXL_beta::stability.ai#6901", "SDXL 1.0"]
+            model_reference.get_model_baseline(mn) in ["stable_diffusion_xl", "stable_cascade"] for mn in model_names
         ):
             max_res = 1024
         if max_res > 1024:
             max_res = 1024
+        # Using more than 10 steps with LCM requires upfront kudos
+        if self.is_using_lcm() and self.get_accurate_steps() > 10:
+            return (True, max_res, False)
+        # Stable Cascade doesn't need so many steps, so we limit it a bit to prevent abuse.
+        if any(model_reference.get_model_baseline(mn) in ["stable_cascade"] for mn in model_names) and self.get_accurate_steps() > 30:
+            return (True, max_res, False)
         if self.get_accurate_steps() > 50:
-            return (True, max_res)
+            return (True, max_res, False)
         if self.width * self.height > max_res * max_res:
-            return (True, max_res)
+            return (True, max_res, False)
         if self.params.get("control_type") and self.get_accurate_steps() > 20:
-            return (True, max_res)
-        # 10 or more weights, require upfront kudos
-        if count_parentheses(self.prompt) > 12:
-            return (True, max_res)
+            return (True, max_res, False)
         # haven't decided yet if this is a good idea.
         # if 'RealESRGAN_x4plus' in self.gen_payload.get('post_processing', []):
         #     return(True,max_res)
-        return (False, max_res)
+        # if HORDE_UPFRONT_KUDOS_ON_WORKERLIST is set to 1, then specifying a worker allow/deny list requires upfront kudos
+        if os.getenv("HORDE_UPFRONT_KUDOS_ON_WORKERLIST", "0") == "1" and len(self.workers) > 0:
+            return (True, max_res, True)
+        return (False, max_res, False)
+
+    def downgrade(self, max_resolution):
+        """Ensures this WP requirements are not exceeding upfront kudos requirements"""
+        self.slow_workers = True
+        downgraded = False
+        while self.width * self.height > max_resolution * max_resolution:
+            downgraded = True
+            self.width -= 64
+            self.height -= 64
+            # Break, just in case we went too low
+            if self.width * self.height < 512 * 512:
+                break
+        max_steps = 50
+        if any(model_reference.get_model_baseline(mn) in ["stable_cascade"] for mn in self.get_model_names()):
+            max_steps = 30
+        if self.params.get("control_type"):
+            max_steps = 20
+        if self.is_using_lcm():
+            max_steps = 10
+        while self.get_accurate_steps() > max_steps:
+            downgraded = True
+            self.params["steps"] -= 1
+            if self.params["steps"] < 5:
+                break
+        if downgraded:
+            self.params["width"] = self.width
+            self.params["height"] = self.height
+            self.gen_payload["height"] = self.height
+            self.gen_payload["width"] = self.width
+            self.gen_payload["ddim_steps"] = self.params["steps"]
+            logger.info(f"Image WP {self.id} was downgraded to {self.width}x{self.height}x{self.params['steps']}")
+            db.session.commit()
+
+    def is_using_lcm(self):
+        if self.params["sampler_name"] == "lcm":
+            return True
+        for lora in self.params.get("loras", []):
+            if lora.get("is_version"):
+                if lora["name"] in KNOWN_LCM_LORA_VERSIONS:
+                    return True
+            elif lora["name"] in KNOWN_LCM_LORA_IDS:
+                return True
 
     def get_accurate_steps(self):
         if self.params.get("sampler_name", "k_euler_a") in ["k_dpm_adaptive"]:
@@ -381,18 +440,10 @@ class ImageWaitingPrompt(WaitingPrompt):
             # so we just calculate it as an average 50 steps
             return 40
         steps = self.params["steps"]
-        if self.params.get("sampler_name", "k_euler_a") in [
-            "k_heun",
-            "k_dpm_2",
-            "k_dpm_2_a",
-            "k_dpmpp_2s_a",
-        ]:
+        if self.params.get("sampler_name", "k_euler_a") in SECOND_ORDER_SAMPLERS:
             # These samplerS do double steps per iteration, so they're at half the speed
             # So we adjust the things to take that into account
             steps *= 2
-        if self.source_image and self.source_processing == "img2img":
-            # 0.8 is the default on nataili
-            steps *= self.gen_payload.get("denoising_strength", 0.8)
         return steps
 
     def set_job_ttl(self):
@@ -415,8 +466,6 @@ class ImageWaitingPrompt(WaitingPrompt):
         # CN is 3 times slower
         if self.gen_payload.get("control_type"):
             self.job_ttl = self.job_ttl * 3
-        weights_count = count_parentheses(self.prompt)
-        self.job_ttl += 3 * weights_count
         if "SDXL_beta::stability.ai#6901" in self.get_model_names():
             logger.debug(self.get_model_names())
             self.job_ttl = 300
@@ -428,7 +477,7 @@ class ImageWaitingPrompt(WaitingPrompt):
         if self.source_image:
             source_processing = self.source_processing
         logger.warning(
-            f"Faulting waiting {source_processing} prompt {self.id} with payload '{self.gen_payload}' due to too many faulted jobs"
+            f"Faulting waiting {source_processing} prompt {self.id} with payload '{self.gen_payload}' due to too many faulted jobs",
         )
 
     def get_status(self, **kwargs):
@@ -448,7 +497,23 @@ class ImageWaitingPrompt(WaitingPrompt):
             model_name = self.models[0].model
         else:
             model_name = "SDXL 1.0"
-        if model_reference.get_model_baseline(model_name) == "stable_diffusion_xl":
+        if model_reference.get_model_baseline(model_name) in ["stable_diffusion_xl"]:
             return (self.calculate_extra_kudos_burn(kudos) * self.n * 2) + 1
+        if model_reference.get_model_baseline(model_name) in ["stable_cascade"]:
+            return (self.calculate_extra_kudos_burn(kudos) * self.n * 4) + 1
         # The +1 is the extra kudos burn per request
         return (self.calculate_extra_kudos_burn(kudos) * self.n) + 1
+
+    def get_amount_calculation_things(self):
+        return self.width * self.height
+
+    def has_heavy_operations(self):
+        for pp in self.params.get("post_processing", []):
+            if pp in HEAVY_POST_PROCESSORS:
+                return True
+        if self.params.get("transparent", False):
+            return True
+        return False
+
+    def count_pp(self):
+        return len(self.params.get("post_processing", []))

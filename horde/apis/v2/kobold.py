@@ -1,14 +1,25 @@
-from .base import *
+from flask import request
+from flask_restx import Resource, reqparse
+
+import horde.apis.limiter_api as lim
+from horde import exceptions as e
+from horde.apis.models.kobold_v2 import TextModels, TextParsers
+from horde.apis.v2.base import GenerateTemplate, JobPopTemplate, JobSubmitTemplate, api
+from horde.classes.base import settings
+from horde.classes.kobold.genstats import (
+    get_compiled_textgen_stats_models,
+    get_compiled_textgen_stats_totals,
+)
 from horde.classes.kobold.waiting_prompt import TextWaitingPrompt
 from horde.classes.kobold.worker import TextWorker
+from horde.database import functions as database
 from horde.database import text_functions as text_database
-from horde.classes.kobold.genstats import (
-    compile_textgen_stats_totals,
-    compile_textgen_stats_models,
-)
-
-from horde.apis.models.kobold_v2 import TextModels, TextParsers
+from horde.flask import cache, db
+from horde.limiter import limiter
+from horde.logger import logger
 from horde.model_reference import model_reference
+from horde.utils import hash_dictionary
+from horde.vars import horde_title
 
 models = TextModels(api)
 parsers = TextParsers()
@@ -16,10 +27,19 @@ parsers = TextParsers()
 
 class TextAsyncGenerate(GenerateTemplate):
     gentype = "text"
+    decorators = [
+        limiter.limit(
+            limit_value=lim.get_request_90min_limit_per_ip,
+            key_func=lim.get_request_path,
+        ),
+        limiter.limit(limit_value=lim.get_request_2sec_limit_per_ip, key_func=lim.get_request_path),
+        limiter.limit(
+            limit_value=lim.get_request_limit_per_apikey,
+            key_func=lim.get_request_api_key,
+        ),
+    ]
 
-    @api.expect(
-        parsers.generate_parser, models.input_model_request_generation, validate=True
-    )
+    @api.expect(parsers.generate_parser, models.input_model_request_generation, validate=True)
     @api.marshal_with(
         models.response_model_async,
         code=202,
@@ -40,8 +60,8 @@ class TextAsyncGenerate(GenerateTemplate):
         self.args = parsers.generate_parser.parse_args()
         try:
             super().post()
-        except KeyError as err:
-            logger.error(f"caught missing Key.")
+        except KeyError:
+            logger.error("caught missing Key.")
             logger.error(self.args)
             logger.error(self.args.params)
             return {"message": "Internal Server Error"}, 500
@@ -71,6 +91,8 @@ class TextAsyncGenerate(GenerateTemplate):
             safe_ip=True,
             client_agent=self.args["Client-Agent"],
             sharedkey_id=self.args.apikey if self.sharedkey else None,
+            proxied_account=self.args["proxied_account"],
+            webhook=self.args.webhook,
         )
         _, total_threads = database.count_active_workers("text")
         highest_multiplier = 0
@@ -83,55 +105,68 @@ class TextAsyncGenerate(GenerateTemplate):
                 model_multiplier = model_reference.get_text_model_multiplier(model)
                 if model_multiplier > highest_multiplier:
                     highest_multiplier = model_multiplier
-            required_kudos = (
-                round(self.wp.max_length * highest_multiplier / 21, 2) * self.wp.n
-            )
-        if (
-            self.sharedkey
-            and self.sharedkey.kudos != -1
-            and required_kudos > self.sharedkey.kudos
-        ):
-            raise e.KudosUpfront(
-                required_kudos,
-                self.username,
-                message=f"This shared key does not have enough remaining kudos ({self.sharedkey.kudos}) to fulfill this reques ({required_kudos}).",
-            )
-        needs_kudos, tokens = self.wp.require_upfront_kudos(
-            database.retrieve_totals(), total_threads
-        )
-        if needs_kudos:
-            if required_kudos > self.user.kudos:
+            required_kudos = round(self.wp.max_length * highest_multiplier / 21, 2) * self.wp.n
+        needs_kudos, tokens, disable_downgrade = self.wp.require_upfront_kudos(database.retrieve_totals(), total_threads)
+        if self.sharedkey and self.sharedkey.kudos != -1 and required_kudos > self.sharedkey.kudos:
+            if self.args.allow_downgrade and not disable_downgrade:
+                self.downgrade_wp_priority = True
+            else:
+                self.wp.delete()
                 raise e.KudosUpfront(
                     required_kudos,
                     self.username,
-                    message=f"Due to heavy demand, for requests over {tokens} tokens, the client needs to already have the required kudos. This request requires {required_kudos} kudos to fulfil.",
+                    message=f"This shared key does not have enough remaining kudos ({self.sharedkey.kudos}) "
+                    f"to fulfill this reques ({required_kudos}).",
+                    rc="SharedKeyInsufficientKudos",
                 )
+        if needs_kudos:
+            if required_kudos > self.user.kudos:
+                if self.args.allow_downgrade and not disable_downgrade:
+                    self.wp.downgrade(tokens)
+                else:
+                    self.wp.delete()
+                    raise e.KudosUpfront(
+                        required_kudos,
+                        self.username,
+                        message=f"Due to heavy demand, for requests over {tokens} tokens, "
+                        "the client needs to already have the required kudos. "
+                        f"This request requires {required_kudos} kudos to fulfil.",
+                    )
 
         if self.sharedkey:
             is_in_limit, fail_message = self.sharedkey.is_job_within_limits(
                 text_tokens=self.wp.max_length,
             )
             if not is_in_limit:
+                self.wp.delete()
                 raise e.BadRequest(fail_message)
 
     def get_size_too_big_message(self):
-        return "Warning: No available workers can fulfill this request. It will expire in 20 minutes. Consider reducing the amount of tokens to generate."
+        return (
+            "Warning: No available workers can fulfill this request. It will expire in 20 minutes. "
+            "Consider reducing the amount of tokens to generate."
+        )
 
     def validate(self):
         super().validate()
-        if self.params.get("max_context_length", 1024) < self.params.get(
-            "max_length", 80
-        ):
+        if self.params.get("max_context_length", 1024) < self.params.get("max_length", 80):
+            raise e.BadRequest("You cannot request more tokens than your context length.", rc="TokenOverflow")
+        if "sampler_order" in self.params and len(set(self.params["sampler_order"])) < 7:
             raise e.BadRequest(
-                "You cannot request more tokens than your context length."
+                "When sending a custom sampler order, you need to specify all possible samplers in the order",
+                rc="MissingFullSamplerOrder",
             )
-        if (
-            "sampler_order" in self.params
-            and len(set(self.params["sampler_order"])) < 7
-        ):
-            raise e.BadRequest(
-                "When sending a custom sampler order, you need to specify all possible samplers in the order"
-            )
+        if self.args.extra_source_images is not None and len(self.args.extra_source_images) > 0:
+            raise e.BadRequest("This request type does not accept extra source images.", rc="InvalidExtraSourceImages.")
+        if "stop_sequence" in self.params:
+            stop_seqs = set(self.params["stop_sequence"])
+            if len(stop_seqs) > 128:
+                raise e.BadRequest("Too many stop sequences specified (max allowed is 128).", rc="TooManyStopSequences")
+            total_stop_seq_len = 0
+            for seq in stop_seqs:
+                total_stop_seq_len += len(seq)
+            if total_stop_seq_len > 2000:
+                raise e.BadRequest("Your total stop sequence length exceeds the allowed limit (2000 chars).", rc="ExcessiveStopSequence")
 
     def get_hashed_params_dict(self):
         gen_payload = self.params.copy()
@@ -155,7 +190,7 @@ class TextAsyncStatus(Resource):
     )
 
     # If I marshal it here, it overrides the marshalling of the child class unfortunately
-    decorators = [limiter.limit("60/minute", key_func=get_request_path)]
+    decorators = [limiter.limit("60/minute", key_func=lim.get_request_path)]
 
     @api.expect(get_parser)
     @api.marshal_with(
@@ -234,9 +269,7 @@ class TextJobPop(JobPopTemplate):
     decorators = [limiter.limit("60/second")]
 
     @api.expect(parsers.job_pop_parser, models.input_model_job_pop, validate=True)
-    @api.marshal_with(
-        models.response_model_job_pop, code=200, description="Generation Popped"
-    )
+    @api.marshal_with(models.response_model_job_pop, code=200, description="Generation Popped")
     @api.response(400, "Validation Error", models.response_model_error)
     @api.response(401, "Invalid API Key", models.response_model_error)
     @api.response(403, "Access Denied", models.response_model_error)
@@ -277,20 +310,13 @@ class TextJobPop(JobPopTemplate):
 
         return sorted_wps
 
-    def check_ip(self):
-        self.safe_ip = True
-        if not self.user.trusted and not patrons.is_patron(self.user.id):
-            self.safe_ip = CounterMeasures.is_ip_safe(self.worker_ip)
-        # We don't abort for VPN IPs in KAI for now
 
 
 class TextJobSubmit(JobSubmitTemplate):
     decorators = [limiter.limit("60/second")]
 
     @api.expect(parsers.job_submit_parser, models.input_model_job_submit, validate=True)
-    @api.marshal_with(
-        models.response_model_job_submit, code=200, description="Generation Submitted"
-    )
+    @api.marshal_with(models.response_model_job_submit, code=200, description="Generation Submitted")
     @api.response(400, "Generation Already Submitted", models.response_model_error)
     @api.response(401, "Invalid API Key", models.response_model_error)
     @api.response(403, "Access Denied", models.response_model_error)
@@ -325,13 +351,13 @@ class TextHordeStatsTotals(Resource):
     @api.marshal_with(
         models.response_model_stats_img_totals,
         code=200,
-        description="Horde generated text statistics",
+        description=f"{horde_title} generated text statistics",
     )
     def get(self):
         """Details how many texts have been generated in the past minux,hour,day,month and total
         Also shows the amount of pixelsteps for the same timeframe.
         """
-        return compile_textgen_stats_totals(), 200
+        return get_compiled_textgen_stats_totals(), 200
 
 
 class TextHordeStatsModels(Resource):
@@ -351,20 +377,18 @@ class TextHordeStatsModels(Resource):
     @api.marshal_with(
         models.response_model_stats_models,
         code=200,
-        description="Horde generated text statistics per model",
+        description=f"{horde_title} generated text statistics per model",
     )
     def get(self):
         """Details how many texts were generated per model for the past day, month and total"""
-        return compile_textgen_stats_models(), 200
+        return get_compiled_textgen_stats_models(), 200
 
 
 class KoboldKudosTransfer(Resource):
     post_parser = reqparse.RequestParser()
     post_parser.add_argument("kai_id", type=int, required=True, location="json")
     post_parser.add_argument("kudos_amount", type=int, required=True, location="json")
-    post_parser.add_argument(
-        "trusted", type=bool, default=False, required=True, location="json"
-    )
+    post_parser.add_argument("trusted", type=bool, default=False, required=True, location="json")
 
     @api.expect(post_parser)
     def post(self, user_id=""):
@@ -376,7 +400,7 @@ class KoboldKudosTransfer(Resource):
             raise e.UserNotFound(user_id)
         self.args = self.post_parser.parse_args()
         logger.warning(
-            f"{user.get_unique_alias()} Started {self.args.kudos_amount}Kudos Transfer from KAI ID {self.args.kai_id}"
+            f"{user.get_unique_alias()} Started {self.args.kudos_amount}Kudos Transfer from KAI ID {self.args.kai_id}",
         )
         if user.trusted is False and self.args.trusted is True:
             user.set_trusted(self.args.trusted)

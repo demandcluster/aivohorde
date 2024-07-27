@@ -1,10 +1,13 @@
 import math
+import os
 
-from horde.logger import logger
+from horde import vars as hv
 from horde.classes.base.processing_generation import ProcessingGeneration
 from horde.classes.kobold.genstats import record_text_statistic
 from horde.flask import db
+from horde.logger import logger
 from horde.model_reference import model_reference
+from horde.suspicions import Suspicions
 
 
 class TextProcessingGeneration(ProcessingGeneration):
@@ -23,14 +26,18 @@ class TextProcessingGeneration(ProcessingGeneration):
             "worker_name": self.worker.name,
             "model": self.model,
             "id": self.id,
+            "gen_metadata": self.gen_metadata if self.gen_metadata is not None else [],
         }
         return ret_dict
 
     def get_gen_kudos(self):
+        if os.getenv("HORDE_REQUIRE_MATCHED_TARGETING", "0") == "1" and len(self.wp.workers) > 0:
+            return 0.1
         # This formula creates an exponential increase on the kudos consumption, based on the context requested
         # 1024 context is considered the base.
         # The reason is that higher context has exponential VRAM requirements
-        context_multiplier = 2.5 ** (math.log2(self.wp.max_context_length / 1024))
+        actual_context_length = self.get_things_count(self.wp.prompt)
+        context_multiplier = 1.2 + (2.2 ** (math.log2(actual_context_length / 1024)))
         # Prevent shenanigans
         if context_multiplier > 30:
             context_multiplier = 30
@@ -40,14 +47,12 @@ class TextProcessingGeneration(ProcessingGeneration):
         if not model_reference.is_known_text_model(self.model):
             if not self.worker.user.trusted:
                 return context_multiplier
-            # Trusted users with an unknown model gain 1 per token requested, as we don't know their parameters amount
-            return self.get_things_count() * 0.10 * context_multiplier
+            # Trusted users with an unknown model are considered as running a 2.7B model
+            return self.get_things_count() * context_multiplier * (2.7 / 100)
         # This is the approximate reward for generating with a 2.7 model at 4bit
-        kudos = (
-            self.get_things_count()
-            * model_reference.get_text_model_multiplier(self.model)
-            / 100
-        )
+        model_multiplier = model_reference.get_text_model_multiplier(self.model)
+        parameter_bonus = (max(model_multiplier, 13) / 13) ** 0.20
+        kudos = self.get_things_count() * parameter_bonus * model_multiplier / 100
         return round(kudos * context_multiplier, 2)
 
     def log_aborted_generation(self):
@@ -55,7 +60,7 @@ class TextProcessingGeneration(ProcessingGeneration):
         logger.info(
             f"Aborted Stale Generation {self.id} of wp {str(self.wp_id)} "
             f"(for {self.get_things_count()} tokens and {self.wp.max_context_length} content length) "
-            f" from by worker: {self.worker.name} ({self.worker.id})"
+            f" from by worker: {self.worker.name} ({self.worker.id})",
         )
 
     def set_generation(self, generation, things_per_sec, **kwargs):
@@ -84,3 +89,28 @@ class TextProcessingGeneration(ProcessingGeneration):
             # logger.debug([self.wp.things,quick_token_count])
             return quick_token_count
         return self.wp.things
+
+    def record(self, things_per_sec, kudos):
+        # Extended function to try and catch workers using unreasonable
+        # speeds at higher params
+        # This only affects untrusted workers running known models
+        super().record(things_per_sec, kudos)
+        if not model_reference.is_known_text_model(self.model):
+            return
+        if self.worker.user.trusted:
+            return
+        param_multiplier = model_reference.get_text_model_multiplier(self.model)
+        unreasonable_speed = hv.suspicion_thresholds["text"]
+        max_speed_per_multiplier = {
+            70: 12,
+            40: 22,
+            20: 35,
+            13: 50,
+            7: 70,
+        }
+        for params_count in max_speed_per_multiplier:
+            if param_multiplier >= params_count:
+                unreasonable_speed = max_speed_per_multiplier[params_count]
+                break
+        if things_per_sec > unreasonable_speed:
+            self.worker.report_suspicion(reason=Suspicions.UNREASONABLY_FAST, formats=[things_per_sec])

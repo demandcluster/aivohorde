@@ -1,13 +1,14 @@
 from sqlalchemy import func
-from datetime import datetime
-from horde.logger import logger
-from horde.flask import db
+
 from horde.classes.base.worker import (
-    WorkerTemplate,
     WorkerPerformance,
+    WorkerTemplate,
     uuid_column_type,
 )
-from horde.suspicions import Suspicions
+from horde.flask import db
+from horde.logger import logger
+
+# from horde.suspicions import Suspicions
 
 
 class WorkerInterrogationForm(db.Model):
@@ -18,7 +19,7 @@ class WorkerInterrogationForm(db.Model):
         db.ForeignKey("workers.id", ondelete="CASCADE"),
         nullable=False,
     )
-    worker = db.relationship(f"InterrogationWorker", back_populates="forms")
+    worker = db.relationship("InterrogationWorker", back_populates="forms")
     form = db.Column(db.String(30))
 
 
@@ -45,7 +46,7 @@ class InterrogationWorker(WorkerTemplate):
             paused_string = "(Paused) "
         db.session.commit()
         logger.trace(
-            f"{paused_string}Interrogation Worker {self.name} checked-in, offering forms: {form_names} @ {self.max_power} max tiles"
+            f"{paused_string}Interrogation Worker {self.name} checked-in, offering forms: {form_names} @ {self.max_power} max tiles",
         )
 
     def calculate_uptime_reward(self):
@@ -60,10 +61,7 @@ class InterrogationWorker(WorkerTemplate):
             return False, "untrusted"
         # We do not give untrusted workers VPN generations, to avoid anything slipping by and spooking them.
         if not self.user.trusted:
-            if (
-                not interrogation_form.interrogation.safe_ip
-                and not interrogation_form.interrogation.user.trusted
-            ):
+            if not interrogation_form.interrogation.safe_ip and not interrogation_form.interrogation.user.trusted:
                 return False, "untrusted"
         if self.require_upfront_kudos:
             user_actual_kudos = interrogation_form.interrogation.user.kudos
@@ -74,11 +72,8 @@ class InterrogationWorker(WorkerTemplate):
                 )
             if (
                 not interrogation_form.interrogation.user.trusted
-                and interrogation_form.interrogation.user.get_unique_alias()
-                not in self.prioritized_users
-                and user_actual_kudos
-                < interrogation_form.kudos
-                + 1  # All forms take +1 kudos than they give to the worker
+                and interrogation_form.interrogation.user.get_unique_alias() not in self.prioritized_users
+                and user_actual_kudos < interrogation_form.kudos + 1  # All forms take +1 kudos than they give to the worker
             ):
                 return False, "kudos"
         return True, None
@@ -86,9 +81,7 @@ class InterrogationWorker(WorkerTemplate):
     @logger.catch(reraise=True)
     def record_interrogation(self, kudos, seconds_taken):
         """We record the servers newest interrogation contribution"""
-        self.user.record_contributions(
-            raw_things=0, kudos=kudos, contrib_type=self.wtype
-        )
+        self.user.record_contributions(raw_things=0, kudos=kudos, contrib_type=self.wtype)
         self.modify_kudos(kudos, "interrogated")
         self.fulfilments += 1
         # TODO: Switch to use desc() and offset to ensure we don't have performances left over
@@ -132,11 +125,9 @@ class InterrogationWorker(WorkerTemplate):
     def get_performance(self):
         performances = [p.performance for p in self.performance]
         if len(performances):
-            ret_str = (
-                f"{round(sum(performances) / len(performances),1)} seconds per form"
-            )
+            ret_str = f"{round(sum(performances) / len(performances),1)} seconds per form"
         else:
-            ret_str = f"No requests fulfilled yet"
+            ret_str = "No requests fulfilled yet"
         return ret_str
 
     def get_details(self, details_privilege=0):

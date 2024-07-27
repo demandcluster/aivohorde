@@ -1,16 +1,18 @@
-import os
 import json
-import regex as re
 from datetime import datetime
+
 import dateutil.relativedelta
-from horde.logger import logger
-from horde.horde_redis import horde_r_get
-from horde.flask import HORDE, SQLITE_MODE  # Local Testing
-from horde.database.functions import compile_regex_filter, retrieve_regex_replacements
-from horde.model_reference import model_reference
-from unidecode import unidecode
-from horde.argparser import args
 import emoji
+import regex as re
+from unidecode import unidecode
+
+from horde.argparser import args
+from horde.database.functions import compile_regex_filter, retrieve_regex_replacements
+from horde.flask import HORDE, SQLITE_MODE  # Local Testing
+from horde.horde_redis import horde_r_get
+from horde.logger import logger
+from horde.model_reference import model_reference
+
 
 
 class PromptChecker:
@@ -50,7 +52,7 @@ class PromptChecker:
                 "replacement": "adult woman",
             },
             {
-                "regex": re.compile(r"\bboy\b|\bson\b", re.IGNORECASE),
+                "regex": re.compile(r"\bboys?\b|\bsons?\b", re.IGNORECASE),
                 "replacement": "adult man",
             },
         ]
@@ -60,16 +62,14 @@ class PromptChecker:
                 "replacement": "adult woman",
             },
             {
-                "regex": re.compile(r"\b(?<!1)boy\b|\bson\b", re.IGNORECASE),
+                "regex": re.compile(r"\b(?<!1)boys?\b|\bsons?\b", re.IGNORECASE),
                 "replacement": "adult man",
             },
         ]
         self.weight_remover = re.compile(r"\((.*?):\d+\.\d+\)")
         self.whitespace_remover = re.compile(r"(\s(\w)){3,}\b")
         self.whitespace_converter = re.compile(r"([^\w\s]|_)")
-        self.csam_triggers = re.compile(
-            r"\b(0?[0-9]|1[0-9]|2[0-2])(?![0-9]) *years? *old"
-        )
+        self.csam_triggers = re.compile(r"\b(0?[0-9]|1[0-9]|2[0-2])(?![0-9]) *years? *old")
 
     def refresh_regex(self):
         # We don't want to be pulling the regex from redis all the time. We pull them only once per min
@@ -87,16 +87,14 @@ class PromptChecker:
                 stored_replacements = []
             try:
                 stored_replacements = json.loads(cached_replacements)
-            except:
-                logger.warning(
-                    "Errors when loading cached regex replacements in redis! Check threads!"
-                )
+            except Exception:
+                logger.warning("Errors when loading cached regex replacements in redis! Check threads!")
                 stored_replacements = []
-        for id in [10, 11, 20]:
-            filter_id = f"filter_{id}"
+        for _id in [10, 11, 20]:
+            filter_id = f"filter_{_id}"
             if SQLITE_MODE:
                 with HORDE.app_context():
-                    stored_filter = compile_regex_filter(id)
+                    stored_filter = compile_regex_filter(_id)
             else:
                 stored_filter = horde_r_get(filter_id)
             # Ensure we don't get catch-all regex
@@ -114,11 +112,9 @@ class PromptChecker:
                 }
                 for f_entry in stored_replacements
             ]
-            self.next_refresh = (
-                datetime.utcnow() + dateutil.relativedelta.relativedelta(minutes=+1)
-            )
+        self.next_refresh = datetime.utcnow() + dateutil.relativedelta.relativedelta(minutes=1)
 
-    def __call__(self, prompt, id=None):
+    def __call__(self, prompt, _id=None):
         if args.disable_filters:
             return 0, []
         self.refresh_regex()
@@ -131,7 +127,7 @@ class PromptChecker:
         for filters in [self.filters1, self.filters2]:
             for filter_id in filters:
                 # This allows to check only a specific filter ID
-                if id and filter_id != f"filter_{id}":
+                if _id and filter_id != f"filter_{_id}":
                     continue
                 # We only need 1 of the filters in the group to match to increase suspicion
                 # Suspicion does not increase further for more filters in the same group
@@ -139,7 +135,83 @@ class PromptChecker:
                 if filter_id == "filter_10" and len(existing_emojis):
                     found_sus = False
                     emj_list = [emj["emoji"] for emj in existing_emojis]
-                    for emj in ["👧", "👦", "👶", "👼", "🐤", "🐥", "🚼", "🍼", "🚸"]:
+                    for emj in [
+                        "👧",
+                        "👧🏻",
+                        "👧🏼",
+                        "👧🏽",
+                        "👧🏾",
+                        "👧🏿",
+                        "👦",
+                        "👦🏻",
+                        "👦🏼",
+                        "👦🏽",
+                        "👦🏾",
+                        "👦🏿",
+                        "👶🏻",
+                        "👶",
+                        "👶🏼",
+                        "👶🏽",
+                        "👶🏾",
+                        "👶🏿",
+                        "👪",
+                        "👨‍👩‍👧",
+                        "👨‍👩‍👦‍👦",
+                        "👨‍👩‍👧‍👦",
+                        "👨‍👩‍👧‍👧",
+                        "👨‍👨‍👧‍👧",
+                        "👨‍👨‍👧‍👦",
+                        "👨‍👨‍👦‍👦",
+                        "👩‍👩‍👧",
+                        "👩‍👩‍👦",
+                        "👩‍👩‍👧‍👦",
+                        "👩‍👩‍👧‍👦",
+                        "👨‍👦",
+                        "👨‍👧",
+                        "👨‍👧‍👦",
+                        "👨‍👦‍👦",
+                        "👨‍👧‍👧",
+                        "👩‍👦",
+                        "👩‍👧",
+                        "👩‍👧‍👦",
+                        "👩‍👦‍👦",
+                        "👩‍👧‍👧",
+                        "🤱",
+                        "🤱🏻",
+                        "🤱🏼",
+                        "🤱🏽",
+                        "🤱🏾",
+                        "🤱🏿",
+                        "🧑‍🍼",
+                        "🧑🏻‍🍼",
+                        "🧑🏼‍🍼",
+                        "🧑🏽‍🍼",
+                        "🧑🏾‍🍼",
+                        "🧑🏿‍🍼",
+                        "👨‍🍼",
+                        "👨🏻‍🍼",
+                        "👨🏼‍🍼",
+                        "👨🏽‍🍼",
+                        "👨🏾‍🍼",
+                        "👨🏿‍🍼",
+                        "👩‍🍼",
+                        "👩🏻‍🍼",
+                        "👩🏼‍🍼",
+                        "👩🏽‍🍼",
+                        "👩🏾‍🍼",
+                        "👩🏿‍🍼",
+                        "👼",
+                        "👼🏻",
+                        "👼🏼",
+                        "👼🏽",
+                        "👼🏾",
+                        "👼🏿",
+                        "🐤",
+                        "🐥",
+                        "🚼",
+                        "🍼",
+                        "🚸",
+                    ]:
                         if emj in emj_list:
                             matching_groups.append(emj)
                             found_sus = True
@@ -177,8 +249,6 @@ class PromptChecker:
 
     def nsfw_model_prompt_replace(self, prompt, models, already_replaced=False):
         # logger.debug([prompt, models])
-        if not model_reference.has_nsfw_models(models):
-            return False
         if not already_replaced:
             prompt = self.apply_replacement_filter(prompt)
         if prompt is None:
@@ -214,7 +284,7 @@ class PromptChecker:
     def check_prompt_replacement_length(self, prompt):
         if "###" in prompt:
             prompt, negprompt = prompt.split("###", 1)
-        return len(prompt) <= 1000
+        return len(prompt) <= 7000
 
     # this function takes a prompt input, and returns a filtered prompt instead
     # when a prompt is sanitized this way, additional negative prompts are also added
@@ -226,9 +296,7 @@ class PromptChecker:
 
         # since this prompt was already flagged, ALWAYS force some additional NEGATIVE prompts to steer the generation
         # TODO: Remove "old", "mature", "middle-aged" from existing negprompt
-        replacednegprompt = (
-            "###child, infant, underage, immature, teenager, tween" + negprompt
-        )
+        replacednegprompt = "###child, infant, underage, immature, teenager, tween" + negprompt
 
         # we also force the prompt to be normalized to avoid tricks, so nothing will escape the replacement regex
         # this means prompt weights are lost, but it is fine for textgen image prompts
@@ -240,7 +308,8 @@ class PromptChecker:
         if prompt.strip() == "":
             return None
 
-        # at this point all the matching stuff will be filtered out of the prompt. reconstruct sanitized prompt and return
+        # at this point all the matching stuff will be filtered out of the prompt.
+        # reconstruct sanitized prompt and return
         logger.debug(prompt + replacednegprompt)
         return prompt + replacednegprompt
 
@@ -255,10 +324,9 @@ class PromptChecker:
             trim_match = match.group(0).strip()
             replacement = re.sub(r"\s+", "", trim_match)
             prompt = prompt.replace(trim_match, replacement)
-        prompt = re.sub("\s+", " ", prompt)
+        prompt = re.sub(r"\s+", " ", prompt)
         # Remove all accents
-        prompt = unidecode(prompt)
-        return prompt
+        return unidecode(prompt)
 
 
 prompt_checker = PromptChecker()

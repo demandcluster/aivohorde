@@ -1,6 +1,6 @@
 import horde.apis.v2.base as base
-import horde.apis.v2.stable as stable
 import horde.apis.v2.kobold as kobold
+import horde.apis.v2.stable as stable
 from horde.apis.v2.base import api
 
 api.add_resource(stable.ImageAsyncGenerate, "/generate/async")
@@ -23,7 +23,7 @@ api.add_resource(base.WorkerSingle, "/workers/<string:worker_id>")
 api.add_resource(base.TransferKudos, "/kudos/transfer")
 api.add_resource(base.AwardKudos, "/kudos/award")
 api.add_resource(base.HordeModes, "/status/modes")
-api.add_resource(stable.HordeLoad, "/status/performance")
+api.add_resource(base.HordeLoad, "/status/performance")
 api.add_resource(base.Models, "/status/models")
 api.add_resource(base.ModelSingle, "/status/models/<string:model_name>")
 api.add_resource(base.HordeNews, "/status/news")
@@ -31,6 +31,8 @@ api.add_resource(base.Heartbeat, "/status/heartbeat")
 api.add_resource(base.Teams, "/teams")
 api.add_resource(base.TeamSingle, "/teams/<string:team_id>")
 api.add_resource(base.OperationsIP, "/operations/ipaddr")
+api.add_resource(base.OperationsIPSingle, "/operations/ipaddr/<string:ipaddr>")
+api.add_resource(base.OperationsBlockWorkerIP, "/operations/block_worker_ipaddr/<string:worker_id>")
 api.add_resource(stable.Interrogate, "/interrogate/async")
 api.add_resource(stable.InterrogationStatus, "/interrogate/status/<string:id>")
 api.add_resource(stable.InterrogatePop, "/interrogate/pop")
@@ -43,4 +45,6 @@ api.add_resource(stable.ImageHordeStatsTotals, "/stats/img/totals")
 api.add_resource(stable.ImageHordeStatsModels, "/stats/img/models")
 api.add_resource(kobold.TextHordeStatsTotals, "/stats/text/totals")
 api.add_resource(kobold.TextHordeStatsModels, "/stats/text/models")
-api.add_resource(kobold.KoboldKudosTransfer, "/kudos/kai/<string:user_id>")
+api.add_resource(base.DocsTerms, "/documents/terms")
+api.add_resource(base.DocsPrivacy, "/documents/privacy")
+api.add_resource(base.DocsSponsors, "/documents/sponsors")

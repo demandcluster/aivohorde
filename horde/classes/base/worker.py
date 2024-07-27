@@ -1,22 +1,21 @@
 import json
+from datetime import datetime, timedelta
 
 from sqlalchemy import func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.ext.hybrid import hybrid_property
-from datetime import datetime, timedelta
 
-from horde.classes.base.waiting_prompt import WPModels
-from horde.logger import logger
-from horde.flask import db, SQLITE_MODE
-from horde import vars as hv
-from horde.suspicions import SUSPICION_LOGS, Suspicions
-from horde.utils import is_profane, get_db_uuid, sanitize_string
 from horde import horde_redis as hr
+from horde import vars as hv
 from horde.classes.base import settings
 from horde.discord import send_pause_notification
+from horde.flask import SQLITE_MODE, db
+from horde.logger import logger
+from horde.suspicions import SUSPICION_LOGS, Suspicions
+from horde.utils import get_db_uuid, is_profane, sanitize_string
 
+uuid_column_type = lambda: UUID(as_uuid=True) if not SQLITE_MODE else db.String(36)  # FIXME # noqa E731
 
-uuid_column_type = lambda: UUID(as_uuid=True) if not SQLITE_MODE else db.String(36)
 
 
 class WorkerStats(db.Model):
@@ -27,7 +26,7 @@ class WorkerStats(db.Model):
         db.ForeignKey("workers.id", ondelete="CASCADE"),
         nullable=False,
     )
-    worker = db.relationship(f"Worker", back_populates="stats")
+    worker = db.relationship("Worker", back_populates="stats")
     action = db.Column(db.String(20), nullable=False, index=True)
     value = db.Column(db.BigInteger, default=0, nullable=False)
 
@@ -40,10 +39,11 @@ class WorkerPerformance(db.Model):
         db.ForeignKey("workers.id", ondelete="CASCADE"),
         nullable=False,
     )
-    worker = db.relationship(f"Worker", back_populates="performance")
+    worker = db.relationship("Worker", back_populates="performance")
     performance = db.Column(db.Float, primary_key=False)
     created = db.Column(
-        db.DateTime, default=datetime.utcnow
+        db.DateTime,
+        default=datetime.utcnow,
     )  # TODO maybe index here, but I'm not sure how big this table is
 
 
@@ -55,7 +55,7 @@ class WorkerBlackList(db.Model):
         db.ForeignKey("workers.id", ondelete="CASCADE"),
         nullable=False,
     )
-    worker = db.relationship(f"Worker", back_populates="blacklist")
+    worker = db.relationship("Worker", back_populates="blacklist")
     word = db.Column(db.String(20), primary_key=False)
 
 
@@ -67,7 +67,7 @@ class WorkerSuspicions(db.Model):
         db.ForeignKey("workers.id", ondelete="CASCADE"),
         nullable=False,
     )
-    worker = db.relationship(f"Worker", back_populates="suspicions")
+    worker = db.relationship("Worker", back_populates="suspicions")
     suspicion_id = db.Column(db.Integer, primary_key=False)
 
 
@@ -79,10 +79,8 @@ class WorkerModel(db.Model):
         db.ForeignKey("workers.id", ondelete="CASCADE"),
         nullable=False,
     )
-    worker = db.relationship(f"Worker", back_populates="models")
-    model = db.Column(
-        db.String(255)
-    )  # TODO model should be a foreign key to a model table
+    worker = db.relationship("Worker", back_populates="models")
+    model = db.Column(db.String(255))  # TODO model should be a foreign key to a model table
 
 
 class WorkerTemplate(db.Model):
@@ -117,10 +115,7 @@ class WorkerTemplate(db.Model):
     uncompleted_jobs = db.Column(db.Integer, default=0, nullable=False)
     uptime = db.Column(db.BigInteger, default=0, nullable=False)
     threads = db.Column(db.Integer, default=1, nullable=False)
-    bridge_version = db.Column(db.Integer, default=1, nullable=False)
-    bridge_agent = db.Column(
-        db.Text, default="unknown:0:unknown", nullable=False, index=True
-    )
+    bridge_agent = db.Column(db.Text, default="unknown:0:unknown", nullable=False, index=True)
     last_reward_uptime = db.Column(db.BigInteger, default=0, nullable=False)
     # Used by all workers to record how much they can pick up to generate
     # The value of this column is dfferent per worker type
@@ -136,15 +131,10 @@ class WorkerTemplate(db.Model):
 
     allow_unsafe_ipaddr = db.Column(db.Boolean, default=True, nullable=False)
 
-    stats = db.relationship(
-        "WorkerStats", back_populates="worker", cascade="all, delete-orphan"
-    )
-    performance = db.relationship(
-        "WorkerPerformance", back_populates="worker", cascade="all, delete-orphan"
-    )
-    suspicions = db.relationship(
-        "WorkerSuspicions", back_populates="worker", cascade="all, delete-orphan"
-    )
+    stats = db.relationship("WorkerStats", back_populates="worker", cascade="all, delete-orphan")
+    performance = db.relationship("WorkerPerformance", back_populates="worker", cascade="all, delete-orphan")
+    suspicions = db.relationship("WorkerSuspicions", back_populates="worker", cascade="all, delete-orphan")
+    problem_jobs = db.relationship("UserProblemJobs", back_populates="worker", cascade="all, delete-orphan")
 
     require_upfront_kudos = False
     prioritized_users = []
@@ -154,11 +144,7 @@ class WorkerTemplate(db.Model):
 
     @hybrid_property
     def speed(self) -> int:
-        performance_avg = (
-            db.session.query(func.avg(WorkerPerformance.performance))
-            .filter_by(worker_id=self.id)
-            .scalar()
-        )
+        performance_avg = db.session.query(func.avg(WorkerPerformance.performance)).filter_by(worker_id=self.id).scalar()
         if performance_avg:
             return performance_avg
         # We return a baseline speed if the workers hasn't fulfilled anything
@@ -167,13 +153,9 @@ class WorkerTemplate(db.Model):
 
     @speed.expression
     def speed(cls):
-        performance_avg = (
-            db.select(func.avg(WorkerPerformance.performance))
-            .where(WorkerPerformance.worker_id == cls.id)
-            .label("speed")
-        )
+        performance_avg = db.select(func.avg(WorkerPerformance.performance)).where(WorkerPerformance.worker_id == cls.id).label("speed")
         return db.case(
-            [(performance_avg == None, 1 * hv.thing_divisors[cls.wtype])],
+            [(performance_avg == None, 1 * hv.thing_divisors[cls.wtype])],  # noqa E712
             else_=performance_avg,
         )
 
@@ -194,13 +176,9 @@ class WorkerTemplate(db.Model):
             self.name = self.name[:100]
             self.report_suspicion(reason=Suspicions.WORKER_NAME_LONG)
         if is_profane(self.name):
-            self.report_suspicion(
-                reason=Suspicions.WORKER_PROFANITY, formats=[self.name]
-            )
+            self.report_suspicion(reason=Suspicions.WORKER_PROFANITY, formats=[self.name])
 
-    def report_suspicion(
-        self, amount=1, reason=Suspicions.WORKER_PROFANITY, formats=None
-    ):
+    def report_suspicion(self, amount=1, reason=Suspicions.WORKER_PROFANITY, formats=None):
         if not formats:
             formats = []
         # Unreasonable Fast can be added multiple times and it increases suspicion each time
@@ -223,7 +201,7 @@ class WorkerTemplate(db.Model):
             send_pause_notification(
                 f"Worker {self.name} ({self.id}) automatically set to paused.\n"
                 f"Last suspicion log: {reason.name}.\n"
-                f"Total Suspicion {self.get_suspicion()}"
+                f"Total Suspicion {self.get_suspicion()}",
             )
         db.session.commit()
 
@@ -290,11 +268,12 @@ class WorkerTemplate(db.Model):
 
     # This should be extended by each worker type
     def check_in(self, **kwargs):
+        # To avoid excessive commits,
+        # we only record new changes on the worker every 30 seconds
+        if (datetime.utcnow() - self.last_check_in).total_seconds() < 30 and (datetime.utcnow() - self.created).total_seconds() > 30:
+            return
         self.ipaddr = kwargs.get("ipaddr", None)
-        self.bridge_version = kwargs.get("bridge_version", 1)
-        self.bridge_agent = sanitize_string(
-            kwargs.get("bridge_agent", "unknown:0:unknown")
-        )
+        self.bridge_agent = sanitize_string(kwargs.get("bridge_agent", "unknown:0:unknown"))
         self.threads = kwargs.get("threads", 1)
         self.require_upfront_kudos = kwargs.get("require_upfront_kudos", False)
         self.allow_unsafe_ipaddr = kwargs.get("allow_unsafe_ipaddr", True)
@@ -313,7 +292,7 @@ class WorkerTemplate(db.Model):
                 self.modify_kudos(kudos, "uptime")
                 self.user.record_uptime(kudos)
                 logger.debug(
-                    f"Worker '{self.name}' received {kudos} kudos for uptime of {self.uptime_reward_threshold} seconds."
+                    f"Worker '{self.name}' received {kudos} kudos for uptime of {self.uptime_reward_threshold} seconds.",
                 )
                 self.last_reward_uptime = self.uptime
         else:
@@ -350,9 +329,7 @@ class WorkerTemplate(db.Model):
         We do not need to know what type the contribution is, to avoid unnecessarily extending this method
         """
         kudos = kudos * self.get_bridge_kudos_multiplier()
-        self.user.record_contributions(
-            raw_things=raw_things, kudos=kudos, contrib_type=self.wtype
-        )
+        self.user.record_contributions(raw_things=raw_things, kudos=kudos, contrib_type=self.wtype)
         self.modify_kudos(kudos, "generated")
         converted_amount = self.convert_contribution(raw_things)
         self.fulfilments += 1
@@ -373,17 +350,12 @@ class WorkerTemplate(db.Model):
                 .subquery()
             )
             db.session.query(WorkerPerformance).filter_by(worker_id=self.id).filter(
-                WorkerPerformance.id.notin_(subquery)
+                WorkerPerformance.id.notin_(subquery),
             ).delete(synchronize_session=False)
-        new_performance = WorkerPerformance(
-            worker_id=self.id, performance=things_per_sec
-        )
+        new_performance = WorkerPerformance(worker_id=self.id, performance=things_per_sec)
         db.session.add(new_performance)
         db.session.commit()
-        if (
-            things_per_sec / hv.thing_divisors[self.wtype]
-            > hv.suspicion_thresholds[self.wtype]
-        ):
+        if things_per_sec / hv.thing_divisors[self.wtype] > hv.suspicion_thresholds[self.wtype]:
             self.report_suspicion(
                 reason=Suspicions.UNREASONABLY_FAST,
                 formats=[round(things_per_sec / hv.thing_divisors[self.wtype], 2)],
@@ -398,9 +370,7 @@ class WorkerTemplate(db.Model):
             .first()
         )
         if not kudos_details:
-            kudos_details = WorkerStats(
-                worker_id=self.id, action=action, value=round(kudos, 2)
-            )
+            kudos_details = WorkerStats(worker_id=self.id, action=action, value=round(kudos, 2))
             db.session.add(kudos_details)
             db.session.commit()
         else:
@@ -512,9 +482,7 @@ class WorkerTemplate(db.Model):
             "trusted": self.user.trusted,
             "flagged": self.user.flagged,
             "online": not self.is_stale(),
-            "team": {"id": str(self.team.id), "name": self.team.name}
-            if self.team
-            else "None",
+            "team": {"id": str(self.team.id), "name": self.team.name} if self.team else "None",
             "bridge_agent": self.bridge_agent,
         }
         if details_privilege >= 2:
@@ -522,6 +490,7 @@ class WorkerTemplate(db.Model):
             ret_dict["suspicious"] = len(self.suspicions)
         if details_privilege >= 1 or self.user.public_workers:
             ret_dict["owner"] = self.user.get_unique_alias()
+            ret_dict["ipaddr"] = self.ipaddr
             ret_dict["contact"] = self.user.contact
         return ret_dict
 
@@ -550,15 +519,9 @@ class Worker(WorkerTemplate):
     }
     nsfw = db.Column(db.Boolean, default=False, nullable=False)
 
-    blacklist = db.relationship(
-        "WorkerBlackList", back_populates="worker", cascade="all, delete-orphan"
-    )
-    models = db.relationship(
-        "WorkerModel", back_populates="worker", cascade="all, delete-orphan"
-    )
-    processing_gens = db.relationship(
-        "ImageProcessingGeneration", back_populates="worker", lazy="raise"
-    )
+    blacklist = db.relationship("WorkerBlackList", back_populates="worker", cascade="all, delete-orphan")
+    models = db.relationship("WorkerModel", back_populates="worker", cascade="all, delete-orphan")
+    processing_gens = db.relationship("ImageProcessingGeneration", back_populates="worker", lazy="raise")
 
     # This should be extended by each specific horde
     def check_in(self, **kwargs):
@@ -608,7 +571,7 @@ class Worker(WorkerTemplate):
             return self.refresh_model_cache()
         try:
             models_ret = json.loads(model_cache)
-        except TypeError as e:
+        except TypeError:
             logger.error(f"Model cache could not be loaded: {model_cache}")
             return self.refresh_model_cache()
         if models_ret is None:
@@ -663,16 +626,10 @@ class Worker(WorkerTemplate):
             return [False, "blacklist"]
         # Skips working prompts which require a specific worker from a list, and our ID is not in that list
         if waiting_prompt.worker_blacklist:
-            if (
-                len(waiting_prompt.workers)
-                and self.id in waiting_prompt.get_worker_ids()
-            ):
+            if len(waiting_prompt.workers) and self.id in waiting_prompt.get_worker_ids():
                 return [False, "worker_id"]
         else:
-            if (
-                len(waiting_prompt.workers)
-                and self.id not in waiting_prompt.get_worker_ids()
-            ):
+            if len(waiting_prompt.workers) and self.id not in waiting_prompt.get_worker_ids():
                 return [False, "worker_id"]
         # logger.warning(datetime.utcnow())
 
@@ -708,3 +665,7 @@ class Worker(WorkerTemplate):
         for model in self.models:
             db.session.delete(model)
         super().delete()
+
+    # To override
+    def get_safe_amount(self, amount, wp):
+        return amount

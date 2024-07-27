@@ -1,8 +1,9 @@
-from dotenv import load_dotenv
-import os
 import logging
+import os
 
-profile = os.environ.get('PROFILE')
+from dotenv import load_dotenv
+
+profile = os.environ.get("PROFILE")
 
 if profile is not None:
     env_file = f".env_{profile}"
@@ -13,28 +14,39 @@ else:
 from horde.argparser import args
 from horde.flask import HORDE
 from horde.logger import logger
+from horde.metrics import waitress_metrics
 
 logger.init("WSGI Server", status="Starting")
 
 if __name__ == "__main__":
     # Only setting this for the WSGI logs
-
     logging.basicConfig(
         format="%(asctime)s - %(levelname)s - %(module)s:%(lineno)d - %(message)s",
         level=logging.WARNING,
     )
-    from waitress import serve
+    import waitress
+
+    # Monkeypatch to get metrics until below is done
+    # https://github.com/Pylons/waitress/issues/182
+    _create_server = waitress.create_server
+
+    def create_server(*args, **kwargs):
+        server = _create_server(*args, **kwargs)
+        waitress_metrics.setup(server.task_dispatcher)
+        return server
+
+    waitress.create_server = create_server
 
     logger.init("WSGI Server", status="Starting")
     url_scheme = "https"
     if args.insecure:
         os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"  # Disable this on prod
         url_scheme = "http"
-    allowed_host = "horde.aivo.chat"  # "stablehorde.net"
+    allowed_host = "horde.aivo.chat"
     if args.insecure:
         allowed_host = "0.0.0.0"
         logger.init_warn("WSGI Mode", status="Insecure")
-    serve(
+    waitress.serve(
         HORDE,
         port=args.port,
         url_scheme=url_scheme,

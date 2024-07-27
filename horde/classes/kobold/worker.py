@@ -1,20 +1,18 @@
-from datetime import datetime, timedelta
-from sqlalchemy.dialects.postgresql import UUID
 import json
+from datetime import timedelta
 
-from horde.logger import logger
-from horde.flask import db
-from horde.classes.base.worker import Worker
-from horde.suspicions import Suspicions
-from horde.bridge_reference import check_bridge_capability, check_sampler_capability
-from horde.model_reference import model_reference
+from sqlalchemy.dialects.postgresql import UUID
+
 from horde import exceptions as e
-from horde.utils import sanitize_string
-from horde.flask import db, SQLITE_MODE
 from horde import horde_redis as hr
+from horde.classes.base.worker import Worker
+from horde.flask import SQLITE_MODE, db
+from horde.logger import logger
+from horde.model_reference import model_reference
+from horde.utils import sanitize_string
 
+uuid_column_type = lambda: UUID(as_uuid=True) if not SQLITE_MODE else db.String(36)  # FIXME # noqa E731
 
-uuid_column_type = lambda: UUID(as_uuid=True) if not SQLITE_MODE else db.String(36)
 
 
 class TextWorkerSoftprompts(db.Model):
@@ -25,7 +23,7 @@ class TextWorkerSoftprompts(db.Model):
         db.ForeignKey("workers.id", ondelete="CASCADE"),
         nullable=False,
     )
-    worker = db.relationship(f"TextWorker", back_populates="softprompts")
+    worker = db.relationship("TextWorker", back_populates="softprompts")
     softprompt = db.Column(db.String(255))
     wtype = "text"
 
@@ -35,12 +33,10 @@ class TextWorker(Worker):
         "polymorphic_identity": "text_worker",
     }
     # TODO: Switch to max_power
-    max_length =  db.Column(db.Integer, default=180, nullable=False)
-    max_context_length = db.Column(db.Integer, default=4096, nullable=False)
+    max_length = db.Column(db.Integer, default=80, nullable=False)
+    max_context_length = db.Column(db.Integer, default=1024, nullable=False)
 
-    softprompts = db.relationship(
-        "TextWorkerSoftprompts", back_populates="worker", cascade="all, delete-orphan"
-    )
+    softprompts = db.relationship("TextWorkerSoftprompts", back_populates="worker", cascade="all, delete-orphan")
     wtype = "text"
 
     def check_in(self, max_length, max_context_length, softprompts, **kwargs):
@@ -52,7 +48,8 @@ class TextWorker(Worker):
         if self.paused:
             paused_string = "(Paused) "
         logger.trace(
-            f"{paused_string}Text Worker {self.name} checked-in, offering models {self.models} at {self.max_length} max tokens and {self.max_context_length} max content length."
+            f"{paused_string}Text Worker {self.name} checked-in, offering models {self.models} "
+            f"at {self.max_length} max tokens and {self.max_context_length} max content length.",
         )
 
     def refresh_softprompt_cache(self):
@@ -77,8 +74,8 @@ class TextWorker(Worker):
             return self.refresh_softprompt_cache()
         try:
             softprompts_ret = json.loads(softprompts_cache)
-        except TypeError as e:
-            logger.error(f"Softprompts cache could not be loaded: {softprompts_cache}")
+        except TypeError:
+            logger.error("Softprompts cache could not be loaded: {softprompts_cache}")
             return self.refresh_softprompt_cache()
         if softprompts_ret is None:
             return self.refresh_softprompt_cache()
@@ -98,20 +95,28 @@ class TextWorker(Worker):
                 existing_softprompts_names,
                 softprompts,
                 existing_softprompts_names == softprompts,
-            ]
+            ],
         )
         db.session.query(TextWorkerSoftprompts).filter_by(worker_id=self.id).delete()
         db.session.commit()
         for softprompt_name in softprompts:
-            softprompt = TextWorkerSoftprompts(
-                worker_id=self.id, softprompt=softprompt_name
-            )
+            softprompt = TextWorkerSoftprompts(worker_id=self.id, softprompt=softprompt_name)
             db.session.add(softprompt)
         db.session.commit()
         self.refresh_softprompt_cache()
 
     def calculate_uptime_reward(self):
-        return 50
+        model = self.get_model_names()[0]
+        # The base amount of kudos one gets is based on the max context length they've loaded
+        base_kudos = 25 + (15 * self.max_context_length / 1024)
+        if not model_reference.is_known_text_model(model):
+            return base_kudos * 0.5
+        # We consider the 7B models the baseline here
+        param_multiplier = model_reference.get_text_model_multiplier(model) / 7
+        if param_multiplier < 0.25:
+            param_multiplier = 0.25
+        # The uptime is based on both how much context they provide, as well as how many parameters they're serving
+        return round(base_kudos * param_multiplier, 2)
 
     def can_generate(self, waiting_prompt):
         can_generate = super().can_generate(waiting_prompt)
@@ -153,7 +158,5 @@ class TextWorker(Worker):
                     raise e.BadRequest(f"This model can only be hosted by {user_alias}")
             models.add(model)
         if len(models) == 0:
-            raise e.BadRequest(
-                "Unfortunately we cannot accept workers serving unrecognised models at this time"
-            )
+            raise e.BadRequest("Unfortunately we cannot accept workers serving unrecognised models at this time")
         return models

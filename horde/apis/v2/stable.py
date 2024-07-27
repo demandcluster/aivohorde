@@ -1,24 +1,36 @@
-import requests
-import sys
 from datetime import datetime
 
-from .base import *
-from horde.classes.stable.waiting_prompt import ImageWaitingPrompt
-from horde.classes.stable.worker import ImageWorker
+import requests
+from flask import request
+from flask_restx import Resource, reqparse
+
+import horde.apis.limiter_api as lim
+import horde.classes.base.stats as stats
+from horde import exceptions as e
+from horde.apis.models.stable_v2 import ImageModels, ImageParsers
+from horde.apis.v2.base import GenerateTemplate, JobPopTemplate, JobSubmitTemplate, api
+from horde.classes.base import settings
+from horde.classes.base.user import User
+from horde.classes.stable.genstats import (
+    get_compiled_imagegen_stats_models,
+    get_compiled_imagegen_stats_totals,
+)
 from horde.classes.stable.interrogation import Interrogation
 from horde.classes.stable.interrogation_worker import InterrogationWorker
-from horde.countermeasures import CounterMeasures
-from horde.logger import logger
-from horde.classes.stable.genstats import (
-    compile_imagegen_stats_totals,
-    compile_imagegen_stats_models,
-)
-from horde.image import ensure_source_image_uploaded, calculate_image_tiles
-from horde.model_reference import model_reference
+from horde.classes.stable.waiting_prompt import ImageWaitingPrompt
+from horde.classes.stable.worker import ImageWorker
 from horde.consts import KNOWN_POST_PROCESSORS, KNOWN_UPSCALERS
-from horde.classes.base import settings
-
-from horde.apis.models.stable_v2 import ImageModels, ImageParsers
+from horde.countermeasures import CounterMeasures
+from horde.database import functions as database
+from horde.enums import WarningMessage
+from horde.flask import HORDE, cache, db
+from horde.image import calculate_image_tiles, ensure_source_image_uploaded
+from horde.limiter import limiter
+from horde.logger import logger
+from horde.model_reference import model_reference
+from horde.patreon import patrons
+from horde.utils import does_extra_text_reference_exist, hash_dictionary
+from horde.vars import horde_title
 
 models = ImageModels(api)
 parsers = ImageParsers()
@@ -27,9 +39,19 @@ parsers = ImageParsers()
 class ImageAsyncGenerate(GenerateTemplate):
     gentype = "image"
 
-    @api.expect(
-        parsers.generate_parser, models.input_model_request_generation, validate=True
-    )
+    decorators = [
+        limiter.limit(
+            limit_value=lim.get_request_90min_limit_per_ip,
+            key_func=lim.get_request_path,
+        ),
+        limiter.limit(limit_value=lim.get_request_2sec_limit_per_ip, key_func=lim.get_request_path),
+        limiter.limit(
+            limit_value=lim.get_request_limit_per_apikey,
+            key_func=lim.get_request_api_key,
+        ),
+    ]
+
+    @api.expect(parsers.generate_parser, models.input_model_request_generation, validate=True)
     @api.marshal_with(
         models.response_model_async,
         code=202,
@@ -51,9 +73,10 @@ class ImageAsyncGenerate(GenerateTemplate):
         try:
             super().post()
         except KeyError:
-            logger.error(f"caught missing Key.")
-            logger.error(self.args)
-            logger.error(self.args.params)
+            logger.error("caught missing Key.")
+            print_args = self.args.copy()
+            print_args["apikey"] = "REDACTED"
+            logger.error(print_args)
             return {"message": "Internal Server Error"}, 500
         if self.args.dry_run:
             ret_dict = {"kudos": round(self.kudos)}
@@ -64,15 +87,20 @@ class ImageAsyncGenerate(GenerateTemplate):
         }
         if not database.wp_has_valid_workers(self.wp) and not settings.mode_raid():
             ret_dict["message"] = self.get_size_too_big_message()
+            self.warnings.add(WarningMessage.NoAvailableWorker)
+        if len(self.warnings) > 0:
+            ret_dict["warnings"] = list(self.warnings)
         return ret_dict, 202
 
     def get_size_too_big_message(self):
-        return "Warning: No available workers can fulfill this request. It will expire in 20 minutes unless a worker appears. Please confider reducing its size of the request or choosing a different model."
+        return (
+            "Warning: No available workers can fulfill this request. "
+            "It will expire in 20 minutes unless a worker appears. "
+            "Please confider reducing its size of the request or choosing a different model."
+        )
 
     def validate(self):
-        # logger.warning(datetime.utcnow())
         super().validate()
-        # logger.warning(datetime.utcnow())
         # During raids, we prevent VPNs
         if (
             settings.mode_raid()
@@ -85,119 +113,161 @@ class ImageAsyncGenerate(GenerateTemplate):
                 self.safe_ip = True
             # We actually block unsafe IPs for now to combat CP
             if not self.safe_ip:
-                raise e.NotTrusted
+                raise e.NotTrusted(rc="UntrustedUnsafeIP")
         if not self.user.special and self.params.get("special"):
-            raise e.BadRequest("Only special users can send a special field.")
+            raise e.BadRequest("Only special users can send a special field.", "SpecialFieldNeedsSpecialUser")
         for model in self.args.models:
             if "horde_special" in model:
                 if not self.user.special:
-                    raise e.BadRequest(
-                        "Only special users can request a special model."
-                    )
+                    raise e.Forbidden("Only special users can request a special model.", "SpecialModelNeedsSpecialUser")
                 usermodel = model.split("::")
                 if len(usermodel) == 1:
                     raise e.BadRequest(
-                        "Special models must always include the username, in the form of 'horde_special::user#id'"
+                        "Special models must always include the username, in the form of 'horde_special::user#id'",
+                        rc="SpecialMissingUsername",
                     )
                 user_alias = usermodel[1]
                 if self.user.get_unique_alias() != user_alias:
-                    raise e.BadRequest(
-                        f"This model can only be requested by {user_alias}"
-                    )
+                    raise e.Forbidden(f"This model can only be requested by {user_alias}", "SpecialForbidden")
                 if not self.params.get("special"):
-                    raise e.BadRequest(
-                        f"Special models have to include a special payload"
-                    )
+                    raise e.BadRequest("Special models have to include a special payload", rc="SpecialMissingPayload")
         if not self.args.source_image and self.args.source_mask:
             raise e.SourceMaskUnnecessary
         if self.params.get("control_type") in ["normal", "mlsd", "hough"] and any(
-            model_reference.get_model_baseline(model_name).startswith(
-                "stable diffusion 2"
-            )
-            for model_name in self.args.models
+            model_reference.get_model_baseline(model_name).startswith("stable diffusion 2") for model_name in self.args.models
         ):
-            raise e.UnsupportedModel(
-                f"No current model available for this particular ControlNet for SD2.x"
-            )
-        if "control_type" in self.params and any(
-            model_name in ["pix2pix"] for model_name in self.args.models
-        ):
-            raise e.UnsupportedModel("You cannot use ControlNet with these models.")
+            raise e.UnsupportedModel("No current model available for this particular ControlNet for SD2.x", rc="ControlNetUnsupported")
+        for model_req_dict in [model_reference.get_model_requirements(m) for m in self.args.models]:
+            if "clip_skip" in model_req_dict and model_req_dict["clip_skip"] != self.params.get("clip_skip", 1):
+                self.warnings.add(WarningMessage.ClipSkipMismatch)
+            if "min_steps" in model_req_dict and model_req_dict["min_steps"] > self.params.get("steps", 30):
+                self.warnings.add(WarningMessage.StepsTooFew)
+            if "max_steps" in model_req_dict and model_req_dict["max_steps"] < self.params.get("steps", 30):
+                self.warnings.add(WarningMessage.StepsTooMany)
+            if "cfg_scale" in model_req_dict and model_req_dict["cfg_scale"] != self.params.get("cfg_scale", 7.5):
+                self.warnings.add(WarningMessage.CfgScaleMismatch)
+            if "min_cfg_scale" in model_req_dict and model_req_dict["min_cfg_scale"] > self.params.get("cfg_scale", 7.5):
+                self.warnings.add(WarningMessage.CfgScaleTooSmall)
+            if "max_cfg_scale" in model_req_dict and model_req_dict["max_cfg_scale"] < self.params.get("cfg_scale", 7.5):
+                self.warnings.add(WarningMessage.CfgScaleTooLarge)
+            if "samplers" in model_req_dict and self.params.get("sampler_name", "k_euler_a") not in model_req_dict["samplers"]:
+                self.warnings.add(WarningMessage.SamplerMismatch)
+            # FIXME: Scheduler workaround until we support multiple schedulers
+            scheduler = "karras"
+            if not self.params.get("karras", True):
+                scheduler = "simple"
+            if "schedulers" in model_req_dict and scheduler not in model_req_dict["schedulers"]:
+                self.warnings.add(WarningMessage.SchedulerMismatch)
+        if "control_type" in self.params and any(model_name in ["pix2pix"] for model_name in self.args.models):
+            raise e.UnsupportedModel("You cannot use ControlNet with these models.", rc="ControlNetUnsupported")
         # if self.params.get("image_is_control"):
         #    raise e.UnsupportedModel("This feature is disabled for the moment.")
         if "control_type" in self.params and not self.args.source_image:
-            raise e.UnsupportedModel("Controlnet Requires a source image.")
-        if any(model_name in ["SDXL 1.0"] for model_name in self.args.models):
-            if self.params.get("hires_fix", False) is True:
-                raise e.BadRequest("hires fix does not work with SDXL currently.")
+            raise e.BadRequest("Controlnet Requires a source image.", rc="ControlNetSourceMissing")
+        if "control_type" in self.params and self.args.source_processing == "inpainting":
+            raise e.BadRequest("ControlNet cannot be used with inpainting at this time", rc="ControlNetInpaintingMismatch")
+        if any(model_reference.get_model_baseline(model_name).startswith("stable_diffusion_xl") for model_name in self.args.models):
             if "control_type" in self.params:
-                raise e.BadRequest("ControlNet does not work with SDXL currently.")
-        if "loras" in self.params and len(self.params["loras"]) > 5:
-            raise e.BadRequest("You cannot request more than 5 loras per generation.")
+                raise e.BadRequest("ControlNet does not work with SDXL currently.", rc="ControlNetMismatch")
+        if any(model_reference.get_model_baseline(model_name).startswith("stable_cascade") for model_name in self.args.models):
+            if "control_type" in self.params:
+                raise e.BadRequest("ControlNet does not work with Stable Cascade currently.", rc="ControlNetMismatch")
+        if "loras" in self.params:
+            if len(self.params["loras"]) > 5:
+                raise e.BadRequest("You cannot request more than 5 loras per generation.", rc="TooManyLoras")
+            for lora in self.params["loras"]:
+                if lora.get("is_version") and not lora["name"].isdigit():
+                    raise e.BadRequest("explicit LoRa version requests have to be a version ID (i.e integer).", rc="BadLoraVersion")
         if "tis" in self.params and len(self.params["tis"]) > 20:
-            raise e.BadRequest(
-                "You cannot request more than 10 Textual Inversions per generation."
-            )
+            raise e.BadRequest("You cannot request more than 20 Textual Inversions per generation.", rc="TooManyTIs")
+        if self.params.get("transparent", False) is True:
+            if any(
+                model_reference.get_model_baseline(model_name) not in ["stable_diffusion_xl", "stable diffusion 1"]
+                for model_name in self.args.models
+            ):
+                raise e.BadRequest(
+                    "Generating Transparent images is only possible for Stable Diffusion 1.5 and XL models.",
+                    rc="InvalidTransparencyModel",
+                )
+            if self.args.extra_source_images and len(self.args.extra_source_images) > 0:
+                raise e.BadRequest(
+                    "Generating Transparent images is not supported during img2img workflows.",
+                    rc="InvalidTransparencyImg2Img",
+                )
+            if "control_type" in self.params:
+                raise e.BadRequest(
+                    "Generating Transparent images is not supported during controlnet workflows currently.",
+                    rc="InvalidTransparencyCN",
+                )
+        if self.args.source_processing == "remix" and any(
+            not model_reference.get_model_baseline(model_name).startswith("stable_cascade") for model_name in self.args.models
+        ):
+            raise e.BadRequest("Image Remix is only available for Stable Cascade models.", rc="InvalidRemix")
+        if self.args.extra_source_images is not None and len(self.args.extra_source_images) > 0:
+            if self.args.source_processing != "remix":
+                raise e.BadRequest("This request type does not accept extra source images.", rc="InvalidExtraSourceImages.")
+        if self.params.get("extra_texts") is not None and len(self.params.get("extra_texts")) > 0:
+            if self.params.get("workflow") not in ["qr_code"]:
+                raise e.BadRequest("This request type does not accept extra texts.", rc="InvalidExtraTexts.")
+        if self.params.get("workflow") == "qr_code":
+            # QR-code pipeline cannot do batching currently
+            self.args["disable_batching"] = True
+            if not all(
+                model_reference.get_model_baseline(model_name) in ["stable diffusion 1", "stable_diffusion_xl"]
+                for model_name in self.args.models
+            ):
+                raise e.BadRequest("QR Code controlnet only works with SD 1.5 and SDXL models currently", rc="ControlNetMismatch.")
+            if self.params.get("extra_texts") is None or len(self.params.get("extra_texts")) == 0:
+                raise e.BadRequest("This request requires you pass the required extra texts for this workflow.", rc="MissingExtraTexts.")
+            if not does_extra_text_reference_exist(self.params.get("extra_texts"), "qr_code"):
+                raise e.BadRequest("This request requires you pass the required extra texts for this workflow.", rc="MissingExtraTexts.")
         if self.params.get("init_as_image") and self.params.get("return_control_map"):
             raise e.UnsupportedModel(
-                "Invalid ControlNet parameters - cannot send inital map and return the same map"
+                "Invalid ControlNet parameters - cannot send inital map and return the same map",
+                rc="ControlNetInvalidPayload",
             )
-        if not self.args.source_image and any(
-            model_name in ["Stable Diffusion 2 Depth", "pix2pix"]
-            for model_name in self.args.models
-        ):
-            raise e.UnsupportedModel
-        if not self.args.source_image and any(
-            model_name in model_reference.controlnet_models
-            for model_name in self.args.models
-        ):
-            raise e.UnsupportedModel
+        if not self.args.source_image and any(model_name in ["Stable Diffusion 2 Depth", "pix2pix"] for model_name in self.args.models):
+            raise e.UnsupportedModel(rc="SourceImageRequiredForModel")
+        if not self.args.source_image and any(model_name in model_reference.controlnet_models for model_name in self.args.models):
+            raise e.UnsupportedModel(rc="UnexpectedModelName")
         # If the beta has been requested, it takes over the model list
         if "SDXL_beta::stability.ai#6901" in self.models:
             if self.user.is_anon():
-                raise e.Forbidden("Anonymous users cannot use the SDXL_beta.")
+                raise e.Forbidden("Anonymous users cannot use the SDXL_beta.", rc="BetaAnonForbidden")
             self.models = ["SDXL_beta::stability.ai#6901"]
             if self.params["n"] == 1:
-                raise e.BadRequest(
-                    "You need to request at least 2 images for SDXL to allow for comparison"
-                )
+                raise e.BadRequest("You need to request at least 2 images for SDXL to allow for comparison", rc="BetaComparisonFault")
             # SDXL_Beta always generates 2 images
             self.params["n"] = 2
-        if self.args.source_mask and self.params.get("sampler_name") == "DDIM":
-            raise e.UnsupportedModel("You cannot use a mask with the DDIM sampler")
-        if self.args.source_image:
-            if self.args.source_processing == "img2img" and self.params.get(
-                "sampler_name"
-            ) in ["k_dpm_fast", "k_dpm_adaptive", "k_dpmpp_2s_a", "k_dpmpp_2m"]:
-                raise e.UnsupportedSampler
         #     if any(model_name.startswith("stable_diffusion_2") for model_name in self.args.models):
         #         raise e.UnsupportedModel
-        # if not any(model_name.startswith("stable_diffusion_2") for model_name in self.args.models) and self.params.get("sampler_name") in ["dpmsolver"]:
-        #     raise e.UnsupportedSampler
-        if (
-            self.args.models == ["pix2pix"]
-            and self.params.get("sampler_name") == "DDIM"
-        ):
-            raise e.UnsupportedSampler("You cannot use pix2pix with the DDIM sampler")
         if len(self.args["prompt"].split()) > 7500:
             raise e.InvalidPromptSize(self.username)
         if any(model_name in KNOWN_POST_PROCESSORS for model_name in self.args.models):
-            raise e.UnsupportedModel
+            raise e.UnsupportedModel(rc="UnexpectedModelName")
         if self.args.params:
-            upscaler_count = len(
-                [
-                    pp
-                    for pp in self.args.params.get("post_processing", [])
-                    if pp in KNOWN_UPSCALERS
-                ]
-            )
+            upscaler_count = len([pp for pp in self.args.params.get("post_processing", []) if pp in KNOWN_UPSCALERS])
             if upscaler_count > 1:
-                raise e.UnsupportedModel("Cannot use more than 1 upscaler at a time.")
+                raise e.BadRequest("Cannot use more than 1 upscaler at a time.", rc="TooManyUpscalers")
+
+            cfg_scale = self.args.params.get("cfg_scale")
+            if cfg_scale is not None:
+                try:
+                    rounded_cfg_scale = round(cfg_scale, 2)
+                    if rounded_cfg_scale != cfg_scale:
+                        raise e.BadRequest("cfg_scale must be rounded to 2 decimal places", rc="BadCFGDecimals")
+                except (TypeError, ValueError):
+                    logger.warning(
+                        f"Invalid cfg_scale: {cfg_scale} for user {self.username} when it should be already validated.",
+                    )
+                    raise e.BadRequest("cfg_scale must be a valid number", rc="BadCFGNumber")
+
         if self.args["Client-Agent"] in ["My-Project:v0.0.1:My-Contact"]:
-            raise e.BadRequest(
+            raise e.Forbidden(
                 "This Client-Agent appears badly designed and is causing too many warnings. "
                 "First ensure it provides a proper name and contact details. "
-                "Then contact us on Discord to discuss the issue it's creating."
+                "Then contact us on Discord to discuss the issue it's creating.",
+                rc="BannedClientAgent",
             )
 
     # We split this into its own function, so that it may be overriden
@@ -231,29 +301,50 @@ class ImageAsyncGenerate(GenerateTemplate):
             shared=shared,
             client_agent=self.args["Client-Agent"],
             sharedkey_id=self.args.apikey if self.sharedkey else None,
+            proxied_account=self.args["proxied_account"],
+            disable_batching=self.args["disable_batching"],
+            webhook=self.args.webhook,
         )
         _, total_threads = database.count_active_workers("image")
-        required_kudos = self.wp.kudos * self.wp.n
-        if (
-            self.sharedkey
-            and self.sharedkey.kudos != -1
-            and required_kudos > self.sharedkey.kudos
-        ):
-            raise e.KudosUpfront(
-                required_kudos,
-                self.username,
-                message=f"This shared key does not have enough remaining kudos ({self.sharedkey.kudos}) to fulfill this reques ({required_kudos}).",
-            )
-        needs_kudos, resolution = self.wp.require_upfront_kudos(
-            database.retrieve_totals(), total_threads
-        )
-        if needs_kudos:
-            if required_kudos > self.user.kudos:
+        needs_kudos, resolution, disable_downgrade = self.wp.require_upfront_kudos(database.retrieve_totals(), total_threads)
+        required_kudos = 0
+        if (self.sharedkey and self.sharedkey.kudos != -1) or needs_kudos:
+            required_kudos = self.wp.extrapolate_dry_run_kudos()
+        if self.sharedkey and self.sharedkey.kudos != -1 and required_kudos > self.sharedkey.kudos:
+            if self.args.allow_downgrade and not disable_downgrade:
+                self.downgrade_wp_priority = True
+            else:
+                self.wp.delete()
                 raise e.KudosUpfront(
                     required_kudos,
                     self.username,
-                    message=f"Due to heavy demand, for requests over {resolution}x{resolution} or over 50 steps (25 for k_heun and k_dpm_2*), and for 12 or more weights, the client needs to already have the required kudos. This request requires {required_kudos} kudos to fulfil.",
+                    message=f"This shared key does not have enough remaining kudos ({self.sharedkey.kudos}) "
+                    f"to fulfill this request ({required_kudos}).",
+                    rc="SharedKeyInsufficientKudos",
                 )
+        if needs_kudos is True:
+            if required_kudos > self.user.kudos:
+                if self.args.allow_downgrade and not disable_downgrade:
+                    self.wp.downgrade(resolution)
+                else:
+                    self.wp.delete()
+                    raise e.KudosUpfront(
+                        required_kudos,
+                        self.username,
+                        message=f"Due to heavy demand, for requests over {resolution}x{resolution} "
+                        "or over 50 steps (10 steps for LCM work, 30 steps for Stable Cascade, "
+                        "and half those steps for k_heun, dpmpp_sde, and dpm_2*) "
+                        "the client needs to already have the required kudos. "
+                        f"This request requires {required_kudos} kudos to fulfil.",
+                    )
+        if self.wp.params["steps"] >= 300:
+            print_args = self.args.copy()
+            print_args["apikey"] = "REDACTED"
+            logger.warning(
+                f"High step count detected! "
+                f"User: {self.username}. Balance: {self.user.kudos}. Required: {required_kudos}. Upfront: {needs_kudos}. "
+                f"Args: {print_args}",
+            )
             # else:
             #     logger.warning(f"{self.username} requested generation {self.wp.id} requiring upfront kudos: {required_kudos}")
 
@@ -266,6 +357,7 @@ class ImageAsyncGenerate(GenerateTemplate):
                 image_steps=requested_steps,
             )
             if not is_in_limit:
+                self.wp.delete()
                 raise e.BadRequest(fail_message)
 
     def extrapolate_dry_run_kudos(self):
@@ -294,25 +386,34 @@ class ImageAsyncGenerate(GenerateTemplate):
                 self.source_image,
                 img,
                 self.source_image_r2stored,
-            ) = ensure_source_image_uploaded(
-                self.args.source_image, f"{self.wp.id}_src", force_r2=True
-            )
+            ) = ensure_source_image_uploaded(self.args.source_image, f"{self.wp.id}_src", force_r2=True)
             if self.args.source_mask:
                 (
                     self.source_mask,
                     img,
                     self.source_mask_r2stored,
-                ) = ensure_source_image_uploaded(
-                    self.args.source_mask, f"{self.wp.id}_msk", force_r2=True
-                )
+                ) = ensure_source_image_uploaded(self.args.source_mask, f"{self.wp.id}_msk", force_r2=True)
             elif self.args.source_processing == "inpainting":
                 try:
                     _red, _green, _blue, _alpha = img.split()
                 except ValueError:
                     raise e.ImageValidationFailed(
-                        "Inpainting requests must either include a mask, or an alpha channel."
+                        "Inpainting requests must either include a mask, or an alpha channel.",
+                        rc="InpaintingMissingMask",
                     )
-        self.wp.activate(self.source_image, self.source_mask)
+        if self.args.extra_source_images:
+            for iiter, eimg in enumerate(self.args.extra_source_images):
+                (
+                    eimg["image"],
+                    _,
+                    _,
+                ) = ensure_source_image_uploaded(eimg["image"], f"{self.wp.id}_exra_src_{iiter}", force_r2=True)
+        self.wp.activate(
+            downgrade_wp_priority=self.downgrade_wp_priority,
+            source_image=self.source_image,
+            source_mask=self.source_mask,
+            extra_source_images=self.args.extra_source_images,
+        )
 
 
 class ImageAsyncStatus(Resource):
@@ -326,7 +427,7 @@ class ImageAsyncStatus(Resource):
         location="headers",
     )
 
-    decorators = [limiter.limit("10/minute", key_func=get_request_path)]
+    decorators = [limiter.limit("10/minute", key_func=lim.get_request_path)]
 
     # If I marshal it here, it overrides the marshalling of the child class unfortunately
     @api.expect(get_parser)
@@ -416,7 +517,7 @@ class ImageAsyncCheck(Resource):
     )
 
     # Increasing this until I can figure out how to pass original IP from reverse proxy
-    decorators = [limiter.limit("10/second", key_func=get_request_path)]
+    decorators = [limiter.limit("10/second", key_func=lim.get_request_path)]
 
     @cache.cached(timeout=1)
     @api.expect(get_parser)
@@ -434,6 +535,13 @@ class ImageAsyncCheck(Resource):
         # Sending lite mode to try and reduce the amount of bandwidth
         # This will not retrieve procgens, so ETA will not be completely accurate
         self.args = self.get_parser.parse_args()
+        ip_timeout = CounterMeasures.retrieve_timeout(request.remote_addr)
+        if ip_timeout and self.args["Client-Agent"] == "unknown:0:unknown":
+            raise e.Forbidden(
+                message="Your IP address has been blocked due to using an unknown client "
+                "which is sending too many garbage requests. Please contact us on discord.",
+                log=f"Check request via IP {request.remote_addr} on unknown client blocked.",
+            )
         wp = database.get_wp_by_id(id)
         if not wp:
             raise e.RequestNotFound(
@@ -448,6 +556,7 @@ class ImageAsyncCheck(Resource):
             wp_queue_stats=database.get_wp_queue_stats(wp),
             active_worker_count=database.count_active_workers(),
         )
+        logger.debug(lite_status)
         return (lite_status, 200)
 
 
@@ -457,9 +566,7 @@ class ImageJobPop(JobPopTemplate):
     decorators = [limiter.limit("60/second")]
 
     @api.expect(parsers.job_pop_parser, models.input_model_job_pop, validate=True)
-    @api.marshal_with(
-        models.response_model_job_pop, code=200, description="Generation Popped"
-    )
+    @api.marshal_with(models.response_model_job_pop, code=200, description="Generation Popped")
     @api.response(400, "Validation Error", models.response_model_error)
     @api.response(401, "Invalid API Key", models.response_model_error)
     @api.response(403, "Access Denied", models.response_model_error)
@@ -469,12 +576,14 @@ class ImageJobPop(JobPopTemplate):
         """
         # Splitting the post to its own function so that I can have the decorators of post on each extended class
         # Without copying the whole post() code
+        # TODO: self.args is set on the extending methods.
+        # When ImageJobPopSingle is removed, I'll merge back into one method
         self.args = parsers.job_pop_parser.parse_args()
         self.blacklist = []
         if self.args.blacklist:
             self.blacklist = self.args.blacklist
         post_ret, retcode = super().post()
-        if post_ret["id"] == None:
+        if "ids" not in post_ret or len(post_ret["ids"]) == 0:
             db_skipped = database.count_skipped_image_wp(
                 self.worker,
                 self.models,
@@ -485,6 +594,7 @@ class ImageJobPop(JobPopTemplate):
             if "blacklist" in post_ret.get("skipped", {}):
                 db_skipped["blacklist"] = post_ret["skipped"]["blacklist"]
             post_ret["skipped"] = db_skipped
+        # logger.debug(post_ret)
         return post_ret, retcode
 
     def check_in(self):
@@ -497,13 +607,13 @@ class ImageJobPop(JobPopTemplate):
             safe_ip=self.safe_ip,
             ipaddr=self.worker_ip,
             threads=self.args.threads,
-            bridge_version=self.args.bridge_version,
             bridge_agent=self.args.bridge_agent,
             allow_img2img=self.args.allow_img2img,
             allow_painting=self.args.allow_painting,
             allow_unsafe_ipaddr=self.args.allow_unsafe_ipaddr,
             allow_post_processing=self.args.allow_post_processing,
             allow_controlnet=self.args.allow_controlnet,
+            allow_sdxl_controlnet=self.args.allow_sdxl_controlnet,
             allow_lora=self.args.allow_lora,
             priority_usernames=self.priority_usernames,
         )
@@ -524,9 +634,7 @@ class ImageJobSubmit(JobSubmitTemplate):
     decorators = [limiter.limit("60/second")]
 
     @api.expect(parsers.job_submit_parser, models.input_model_job_submit, validate=True)
-    @api.marshal_with(
-        models.response_model_job_submit, code=200, description="Generation Submitted"
-    )
+    @api.marshal_with(models.response_model_job_submit, code=200, description="Generation Submitted")
     @api.response(400, "Generation Already Submitted", models.response_model_error)
     @api.response(401, "Invalid API Key", models.response_model_error)
     @api.response(403, "Access Denied", models.response_model_error)
@@ -552,6 +660,7 @@ class ImageJobSubmit(JobSubmitTemplate):
             seed=self.args.seed,
             censored=self.args.censored,
             state=self.args.state,
+            gen_metadata=self.args.gen_metadata,
         )
 
 
@@ -572,10 +681,10 @@ class Aesthetics(Resource):
 
     decorators = [limiter.limit("5/minute", key_func=get_request_path)]
 
+    decorators = [limiter.limit("5/minute", key_func=lim.get_request_path)]
+
     @api.expect(post_parser, models.input_model_aesthetics_payload, validate=True)
-    @api.marshal_with(
-        models.response_model_job_submit, code=200, description="Aesthetics Submitted"
-    )
+    @api.marshal_with(models.response_model_job_submit, code=200, description="Aesthetics Submitted")
     @api.response(400, "Aesthetics Already Submitted", models.response_model_error)
     @api.response(401, "Invalid API Key", models.response_model_error)
     @api.response(404, "Generation Request Not Found", models.response_model_error)
@@ -595,18 +704,13 @@ class Aesthetics(Resource):
                 client_agent=self.args["Client-Agent"],
             )
         if not wp.is_completed():
-            raise e.InvalidAestheticAttempt(
-                "You can only aesthetically rate completed requests!"
-            )
+            raise e.InvalidAestheticAttempt("You can only aesthetically rate completed requests!", rc="AestheticsNotCompleted")
         if not wp.shared:
             raise e.InvalidAestheticAttempt(
-                "You can only aesthetically rate requests you have opted to share publicly"
+                "You can only aesthetically rate requests you have opted to share publicly",
+                rc="AestheticsNotPublic",
             )
-        procgen_ids = [
-            str(procgen.id)
-            for procgen in wp.processing_gens
-            if not procgen.faulted and not procgen.cancelled
-        ]
+        procgen_ids = [str(procgen.id) for procgen in wp.processing_gens if not procgen.faulted and not procgen.cancelled]
         if self.args.ratings:
             seen_ids = []
             for rating in self.args.ratings:
@@ -614,7 +718,8 @@ class Aesthetics(Resource):
                     raise e.ProcGenNotFound(rating["id"])
                 if rating["id"] in seen_ids:
                     raise e.InvalidAestheticAttempt(
-                        "Duplicate image ID found in your ratings. You should be ashamed!"
+                        "Duplicate image ID found in your ratings. You should be ashamed!",
+                        rc="AestheticsDuplicate",
                     )
                 seen_ids.append(rating["id"])
         if self.args.best:
@@ -622,11 +727,14 @@ class Aesthetics(Resource):
                 raise e.ProcGenNotFound(self.args.best)
         if not self.args.ratings and not self.args.best:
             raise e.InvalidAestheticAttempt(
-                "You need to either point to the best image, or aesthetic ratings."
+                "You need to either point to the best image, or provide aesthetic ratings.",
+                rc="AestheticsMissing",
             )
         if not self.args.ratings and self.args.best and len(procgen_ids) <= 1:
             raise e.InvalidAestheticAttempt(
-                "Well done! You have pointed to a single image generation as being the best one of the set. Unfortunately that doesn't help anyone. no kudos for you!"
+                "Well done! You have pointed to a single image generation as being the best one of the set. "
+                "Unfortunately that doesn't help anyone. no kudos for you!",
+                rc="AestheticsSolo",
             )
         aesthetic_payload = {
             "set": id,
@@ -638,9 +746,7 @@ class Aesthetics(Resource):
                 "account_age": (datetime.utcnow() - wp.user.created).total_seconds(),
                 # "usage_requests": wp.user.usage_requests, # FIXME: Use UserRecords
                 "kudos": wp.user.kudos,
-                "kudos_accumulated": wp.user.compile_kudos_details().get(
-                    "accumulated", 0
-                ),
+                "kudos_accumulated": wp.user.compile_kudos_details().get("accumulated", 0),
                 "ipaddr": request.remote_addr,
             },
         }
@@ -678,7 +784,9 @@ class Aesthetics(Resource):
                     if self.args.best:
                         if self.args.best not in bestofs:
                             raise e.InvalidAestheticAttempt(
-                                "What are you even doing? How could the best image you selected not be one of those with the highest aesthetic rating?"
+                                "What are you even doing? How could the best image you "
+                                "selected not be one of those with the highest aesthetic rating?",
+                                rc="AestheticsConfused",
                             )
                         aesthetic_payload["best"] = self.args.best
                 if len(bestofs) == 1:
@@ -698,39 +806,35 @@ class Aesthetics(Resource):
             )
             if not submit_req.ok:
                 if submit_req.status_code == 403:
-                    raise e.InvalidAestheticAttempt(
-                        "This generation appears already rated"
-                    )
+                    raise e.InvalidAestheticAttempt("This generation appears already rated", rc="AestheticsAlreadyExist")
                 try:
                     error_msg = submit_req.json()
                 except Exception:
                     raise e.InvalidAestheticAttempt(
-                        f"Received unexpected response from rating server: {submit_req.text}"
+                        f"Received unexpected response from rating server: {submit_req.text}",
+                        rc="AestheticsServerRejected",
                     )
-                raise e.InvalidAestheticAttempt(
-                    f"Rating Server returned error: {error_msg['message']}"
-                )
+                raise e.InvalidAestheticAttempt(f"Rating Server returned error: {error_msg['message']}", rc="AestheticsServerError")
         except requests.exceptions.ConnectionError:
-            raise e.InvalidAestheticAttempt("The rating server appears to be down")
+            raise e.InvalidAestheticAttempt("The rating server appears to be down", rc="AestheticsServerDown")
         except requests.exceptions.ReadTimeout:
-            raise e.InvalidAestheticAttempt("The rating server took to long to respond")
+            raise e.InvalidAestheticAttempt("The rating server took to long to respond", rc="AestheticsServerTimeout")
         except Exception as err:
             if type(err) == e.InvalidAestheticAttempt:
                 raise err
             logger.error(f"Error when submitting Aesthetic: {err}")
             raise e.InvalidAestheticAttempt(
-                "Oops, Something went wrong when submitting the request. Please contact us."
+                "Oops, Something went wrong when submitting the request. Please contact us.",
             )
         wp.user.modify_kudos(self.kudos, "awarded")
         return ({"reward": self.kudos}, 200)
 
 
-# I have to put it outside the class as I can't figure out how to extend the argparser and also pass it to the @api.expect decorator inside the class
+# I have to put it outside the class as I can't figure out how to
+# extend the argparser and also pass it to the @api.expect decorator inside the class
 class Interrogate(Resource):
     post_parser = reqparse.RequestParser()
-    post_parser.add_argument(
-        "apikey", type=str, required=True, help="A User API key", location="headers"
-    )
+    post_parser.add_argument("apikey", type=str, required=True, help="A User API key", location="headers")
     post_parser.add_argument(
         "Client-Agent",
         default="unknown:0:unknown",
@@ -753,7 +857,7 @@ class Interrogate(Resource):
         type=bool,
         required=False,
         default=False,
-        help="When true, only Horde trusted workers will serve this request. When False, Evaluating workers will also be used.",
+        help=f"When true, only {horde_title} trusted workers will serve this request. When False, Evaluating workers will also be used.",
         location="json",
     )
     post_parser.add_argument(
@@ -764,6 +868,7 @@ class Interrogate(Resource):
         help="When True, allows slower workers to pick up this request. Disabling this incurs an extra kudos cost.",
         location="json",
     )
+    post_parser.add_argument("webhook", type=str, required=False, location="json")
 
     @api.expect(post_parser, models.input_interrogate_request_generation, validate=True)
     @api.marshal_with(
@@ -800,16 +905,20 @@ class Interrogate(Resource):
             slow_workers=self.args.slow_workers,
             ipaddr=self.user_ip,
             safe_ip=self.safe_ip,
+            webhook=self.args.webhook,
         )
         # If anything goes wrong when uploading an image, we don't want to leave garbage around
         try:
             self.source_image, img, self.r2stored = ensure_source_image_uploaded(
-                self.args.source_image, str(self.interrogation.id)
+                self.args.source_image,
+                str(self.interrogation.id),
             )
             self.image_tiles = calculate_image_tiles(img)
             if self.image_tiles > 255:
                 raise e.ImageValidationFailed(
-                    f"Image is too large ({self.image_tiles} tiles) and would cause horde alchemists to run out of VRAM trying to process it."
+                    f"Image is too large ({self.image_tiles} tiles) and would cause horde "
+                    "alchemists to run out of VRAM trying to process it.",
+                    rc="SourceImageResolutionExceeded",
                 )
         except Exception as err:
             db.session.delete(self.interrogation)
@@ -826,6 +935,8 @@ class Interrogate(Resource):
     def validate(self):
         if settings.mode_maintenance():
             raise e.MaintenanceMode("Interrogate")
+        if self.args.webhook and not self.args.webhook.startswith("https://"):
+            raise e.BadRequest("webhooks need to point to an https endpoint.")
         with HORDE.app_context():
             if self.args.apikey:
                 self.user = database.find_user_by_api_key(self.args["apikey"])
@@ -850,7 +961,7 @@ class Interrogate(Resource):
                 self.safe_ip = True
             # We actually block unsafe IPs for now to combat CP
             if not self.safe_ip:
-                raise e.NotTrusted
+                raise e.NotTrusted(rc="UntrustedUnsafeIP")
 
 
 class InterrogationStatus(Resource):
@@ -864,7 +975,7 @@ class InterrogationStatus(Resource):
         location="headers",
     )
 
-    decorators = [limiter.limit("10/second", key_func=get_request_path)]
+    decorators = [limiter.limit("10/second", key_func=lim.get_request_path)]
 
     @api.expect(get_parser)
     # If I marshal it here, it overrides the marshalling of the child class unfortunately
@@ -968,14 +1079,6 @@ class InterrogatePop(JobPopTemplate):
         location="json",
     )
     post_parser.add_argument(
-        "bridge_version",
-        type=int,
-        required=False,
-        default=1,
-        help="Specify the version of the worker bridge, as that can modify the way the arguments are being sent",
-        location="json",
-    )
-    post_parser.add_argument(
         "bridge_agent",
         type=str,
         required=False,
@@ -1021,7 +1124,7 @@ class InterrogatePop(JobPopTemplate):
             self.priority_usernames = self.args.priority_usernames
             if any("#" not in user_id for user_id in self.priority_usernames):
                 raise e.BadRequest(
-                    "Priority usernames need to be provided in the form of 'alias#number'. Example: 'db0#1'"
+                    "Priority usernames need to be provided in the form of 'alias#number'. Example: 'db0#1'",
                 )
         self.forms = []
         if self.args.forms:
@@ -1034,9 +1137,7 @@ class InterrogatePop(JobPopTemplate):
         # self.priority_users = [self.user]
         ## Start prioritize by bridge request ##
 
-        pre_priority_user_ids = [
-            x.split("#")[-1] for x in self.priority_usernames if x != ""
-        ]
+        pre_priority_user_ids = [x.split("#")[-1] for x in self.priority_usernames if x != ""]
         self.priority_user_ids = [self.user.id]
         # TODO move to database class
         p_users_id_from_db = (
@@ -1076,9 +1177,7 @@ class InterrogatePop(JobPopTemplate):
                 # We don't report on secret skipped reasons
                 # as they're typically countermeasures to raids
                 if skipped_reason != "secret":
-                    self.skipped[skipped_reason] = (
-                        self.skipped.get(skipped_reason, 0) + 1
-                    )
+                    self.skipped[skipped_reason] = self.skipped.get(skipped_reason, 0) + 1
                 # logger.warning(datetime.utcnow())
                 continue
             # There is a chance that by the time we finished all the checks, another worker picked up the WP.
@@ -1114,7 +1213,6 @@ class InterrogatePop(JobPopTemplate):
             safe_ip=self.safe_ip,
             ipaddr=self.worker_ip,
             threads=self.args.threads,
-            bridge_version=self.args.bridge_version,
             bridge_agent=self.args.bridge_agent,
             priority_usernames=self.priority_usernames,
         )
@@ -1211,13 +1309,13 @@ class ImageHordeStatsTotals(Resource):
     @api.marshal_with(
         models.response_model_stats_img_totals,
         code=200,
-        description="Horde generated images statistics",
+        description=f"{horde_title} generated images statistics",
     )
     def get(self):
         """Details how many images have been generated in the past minux,hour,day,month and total
         Also shows the amount of pixelsteps for the same timeframe.
         """
-        return compile_imagegen_stats_totals(), 200
+        return get_compiled_imagegen_stats_totals(), 200
 
 
 class ImageHordeStatsModels(Resource):
@@ -1230,15 +1328,31 @@ class ImageHordeStatsModels(Resource):
         help="The client name and version",
         location="headers",
     )
+    get_parser.add_argument(
+        "model_state",
+        required=False,
+        default="known",
+        type=str,
+        help=(
+            "If 'known', only show stats for known models in the model reference. "
+            "If 'custom' only show stats for custom models. "
+            "If 'all' shows stats for all models."
+        ),
+        location="args",
+    )
 
     @logger.catch(reraise=True)
-    @cache.cached(timeout=50)
+    # @cache.cached(timeout=50, query_string=True)
     @api.expect(get_parser)
+    @api.response(400, "Validation Error", models.response_model_error)
     @api.marshal_with(
         models.response_model_stats_models,
         code=200,
-        description="Horde generated images statistics per model",
+        description=f"{horde_title} generated images statistics per model",
     )
     def get(self):
         """Details how many images were generated per model for the past day, month and total"""
-        return compile_imagegen_stats_models(), 200
+        self.args = self.get_parser.parse_args()
+        if self.args.model_state not in ["known", "custom", "all"]:
+            raise e.BadRequest("'model_state' needs to be one of ['known', 'custom', 'all']")
+        return get_compiled_imagegen_stats_models(self.args.model_state), 200

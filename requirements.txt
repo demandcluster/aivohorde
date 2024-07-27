@@ -2,7 +2,7 @@ werkzeug~=2.2.2
 Flask~=2.2.2
 flask-restx
 flask_limiter~=2.8.1
-Flask-Caching   
+Flask-Caching
 waitress~=2.1.2
 requests >= 2.27
 Markdown~=3.4.1
@@ -20,10 +20,13 @@ flask_sqlalchemy==3.0.2
 oauthlib~=3.2.2
 SQLAlchemy~=1.4.44
 psycopg2-binary
-boto3
+boto3>=1.33.7
 regex
 unidecode
 git+https://github.com/Patreon/patreon-python.git
 --extra-index-url https://download.pytorch.org/whl/cpu
 torch
 emoji
+semver >= 3.0.2
+numpy ~= 1.24.1 # better_profanity fails on later versions of numpy
+markdownify

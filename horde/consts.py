@@ -1,7 +1,8 @@
-HORDE_VERSION = "4.18.9"
+HORDE_VERSION = "4.40.0"
 
 WHITELISTED_SERVICE_IPS = {
     "212.227.227.178",  # Turing Bot
+    "5.189.169.230",  # Discord Bot
 }
 
 # And their extra kudos adjustments based on how expensive to process they are and/or how much extra horde resources they consume
@@ -24,9 +25,66 @@ KNOWN_UPSCALERS = [
     "4x_AnimeSharp",
 ]
 
+# These are postprocessors which require some juice,
+# So we want to reduce the batch amount when used
+HEAVY_POST_PROCESSORS = {
+    "RealESRGAN_x4plus",
+    "RealESRGAN_x4plus_anime_6B",
+    "NMKD_Siax",
+    "4x_AnimeSharp" "CodeFormers",
+}
+
+
+KNOWN_SAMPLERS = {
+    "k_lms",
+    "k_heun",
+    "k_euler",
+    "k_euler_a",
+    "k_dpm_2",
+    "k_dpm_2_a",
+    "k_dpm_fast",
+    "k_dpm_adaptive",
+    "k_dpmpp_2s_a",
+    "k_dpmpp_2m",
+    "dpmsolver",
+    "k_dpmpp_sde",
+    "DDIM",
+    "lcm",
+}
+
+KNOWN_WORKFLOWS = {"qr_code"}
+
+# These samplers perform double the steps per image
+# As such we need to take it into account for the upfront kudos requirements
+SECOND_ORDER_SAMPLERS = [
+    "k_heun",
+    "k_dpm_2",
+    "k_dpm_2_a",
+    "k_dpmpp_2s_a",
+    "k_dpmpp_sde",
+]
+
+KNOWN_LCM_LORA_VERSIONS = {
+    "246747",
+    "247778",
+    "268475",
+    "243643",
+    "225222",
+    "219782",
+    "363353",
+}
+
+KNOWN_LCM_LORA_IDS = {
+    "195519",
+    "216190",
+    "324115",
+}
+
 WHITELISTED_VPN_IPS = [
     "212.227.227.178/32",  # Turing Bot
     "141.144.197.64/32",
+    # Digital Ocean / Paperspace
+    "172.83.13.4/32",
     # Google
     "8.8.4.0/24",
     "8.8.8.0/24",

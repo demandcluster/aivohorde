@@ -1,23 +1,21 @@
-import threading
-import requests
-import os
 import json
+import os
 
-from horde.logger import logger
 from horde.classes.base.processing_generation import ProcessingGeneration
 from horde.classes.stable.genstats import record_image_statistic
-from horde.r2 import (
-    generate_procgen_download_url,
-    upload_shared_metadata,
-    check_shared_image,
-    upload_generated_image,
-    upload_shared_generated_image,
-    download_procgen_image,
-    upload_prompt,
-)
 from horde.flask import db
 from horde.image import convert_b64_to_pil, convert_pil_to_b64
+from horde.logger import logger
 from horde.model_reference import model_reference
+from horde.r2 import (
+    check_shared_image,
+    download_procgen_image,
+    generate_procgen_download_url,
+    upload_generated_image,
+    upload_prompt,
+    upload_shared_generated_image,
+    upload_shared_metadata,
+)
 
 
 class ImageProcessingGeneration(ProcessingGeneration):
@@ -47,13 +45,21 @@ class ImageProcessingGeneration(ProcessingGeneration):
             "model": self.model,
             "id": self.id,
             "censored": self.censored,
+            "gen_metadata": self.gen_metadata if self.gen_metadata is not None else [],
         }
         return ret_dict
 
     def get_gen_kudos(self):
         # We have pre-calculated them as they don't change per worker
-        if model_reference.get_model_baseline(self.model) == "stable_diffusion_xl":
+        if model_reference.get_model_baseline(self.model) in ["stable_diffusion_xl"]:
+            if self.wp.params.get("workflow") == "qr_code":
+                return self.wp.kudos * 4
             return self.wp.kudos * 2
+        if model_reference.get_model_baseline(self.model) in ["stable_cascade"]:
+            # Stable Cascade 2pass has almost a double cost as it generates extra at a low generation
+            if self.wp.params.get("hires_fix", False):
+                return self.wp.kudos * 7
+            return self.wp.kudos * 4
         return self.wp.kudos
 
     def log_aborted_generation(self):
@@ -61,7 +67,7 @@ class ImageProcessingGeneration(ProcessingGeneration):
         logger.info(
             f"Aborted Stale Generation {self.id} of wp {str(self.wp_id)} "
             f"({self.wp.width}x{self.wp.height}x{self.wp.params['steps']}@{self.wp.params['sampler_name']})"
-            f" from by worker: {self.worker.name} ({self.worker.id})"
+            f" from by worker: {self.worker.name} ({self.worker.id})",
         )
 
     def set_generation(self, generation, things_per_sec, **kwargs):
@@ -88,7 +94,7 @@ class ImageProcessingGeneration(ProcessingGeneration):
             return -1
         if generation != "R2":
             logger.warning(
-                f"Worker {self.worker.name} ({self.worker.id}) with bridge version {self.worker.bridge_version} returned a b64. Converting..."
+                f"Worker {self.worker.name} ({self.worker.id}) with bridge agent {self.worker.bridge_agent} returned a b64. Converting...",
             )
             if self.wp.shared:
                 upload_method = upload_shared_generated_image
@@ -108,6 +114,13 @@ class ImageProcessingGeneration(ProcessingGeneration):
         record_image_statistic(self)
         if self.wp.shared and not self.fake and generation == "R2":
             self.upload_generation_metadata()
+        if state == "csam":
+            self.wp.user.record_problem_job(
+                procgen=self,
+                ipaddr=self.wp.ipaddr,
+                worker=self.worker,
+                prompt=self.wp.prompt,
+            )
         return kudos
 
     def upload_generation_metadata(self):

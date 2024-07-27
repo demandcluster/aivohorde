@@ -2,11 +2,16 @@
 
 # AI Horde
 
-A massive crowdsourced distributed inference cluster for AI Models. This software can support both Image and Text generation.
-It allows people without a powerful GPU to use Stable Diffusion or Large Language Models like Pygmalion/Llama by relying on spare/idle resources provided by the community.
-It also allows non-python clients, such as games and apps, to use AI-provided generations.
+The AI Horde is an enterprise-level ML-Ops crowdsourced distributed inference cluster for AI Models. This middleware can support both Image and Text generation. It is infinitelly scalable and supports seamless drop-in/drop-out of compute resources. 
+The [Public version](https://aihorde.net) allows people without a powerful GPU to use Stable Diffusion or Large Language Models like Pygmalion/Llama by relying on spare/idle resources provided by the communit and also allows non-python clients, such as games and apps, to use AI-provided generations.
+
+The AI Horde middleware itself can also be run privately inside a closed environment within any enterprise. It can be installed within hours and can scale your ML solution within days of deployment. 
 
 For more questions, check the [FAQ](FAQ.md)
+
+# Sponsors
+
+[![](assets/logo_nlnet.svg)](https://nlnet.nl/project/AI-Horde/)
 
 # Registering
 
@@ -29,13 +34,9 @@ If you do not want to login even with a pseudonymous account, you can use this s
 
 The point of registering is to track your usage and your contributions. The more you contribute to the Horde, the more priority you have. [Read about this here](https://dbzer0.com/blog/the-kudos-based-economy-for-the-koboldai-horde/)
 
-## REST API
+## Integration
 
-We provide a fully open REST API for all Generative AI functions we support.
-
-[Complete Documentation](https://aihorde.net/api).
-
-![](api_screenshot.png)
+If you want to build an integration to the AI Horde (Bot, application, scripts etc), please consult our [Integration Readme](README_integration.md)
 
 # Community
 

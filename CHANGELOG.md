@@ -1,5 +1,200 @@
 # Changelog
 
+# 4.30.0
+
+* Adds the `active_generations` privileged key on user info providing a list of all non-expired gens the user has active.
+
+# 4.39.1
+
+* Added news about transparent images
+* Adds `hires_fix_denoising_strength` to the API params
+* Prevents gens using transparency on invalid workflows
+
+# 4.39.0
+
+* Adds generating transparent images
+
+# 4.38.0
+
+* Add waitress / db metrics to heartbeat
+
+# 4.36.0
+
+* Added Document endpoints
+
+# 4.35.1
+
+* Added allow_sdxl_controlnet worker key
+
+# 4.35.0
+
+* Added ability to generate QR-code images
+
+# 4.34.1
+
+* fix missing `allow_downgrade` doc from the API
+* Add extra horde tax per extra source image
+
+# 4.34.0
+
+* Adds support for Stable Cascade img2img
+* Adds support for Stable Cascade remix. Allows sending up to 5 extra images to mash together.
+
+# 4.33.0
+
+* When there is any potential issues with the request, the warnings key will be returned containing an array of potential issues. This should be returned to the user to inform them to potentially cancel the request in advance.
+
+# 4.32.5
+
+* parses url-escaped values for model names
+* Increased max `max_length` to 1024
+
+# 4.32.4
+
+* Fix crash when receiving generation with NUL char
+* Fix crash when using shared keys
+
+# 4.32.3
+
+* Shared Keys details now include their name
+* Allow customizing horde model reference locations
+* Added allow_downgrade on the async/generate payloads which allows the horde to automatically downgrade requests when the requesting user doesn't have enough kudos
+* allow_downgrade on empty shared keys, will also downgrade the priority of the request to anon
+
+# 4.32.2
+
+* Adds support for customizing the Horde (name/icons/frontpage etc)
+* Fixes crash when priority list in wrong format
+
+# 4.32.0
+
+* Add education role
+
+# 4.31.4
+
+* Fix worker picking up testing models because they were missing customizer role
+
+# 4.31.3
+
+* Added some restrictions for Stable Cascade
+
+# 4.31.2
+
+* Specialized some generic rcs
+* Blocked ControlNet + Inpainting
+
+# 4.31.1
+
+* Documents rc return to swagger
+
+# 4.31.0
+
+* Added error return codes
+
+# 4.30.0
+
+* Added webhooks
+
+# 4.29.1
+
+* Upscalers reduce the batching amount
+
+# 4.29.0
+
+* New async key `disable_batching`. Set to true to avoid batching these requests. Useful for picking up an accurate seed.
+* Allows reporting back a `batch_index` in the `gen_metadata`
+
+# 4.28.2
+
+* Fixes inpainting being never available
+
+# 4.28.1
+
+* Removed obsolete sampler limiters
+* Allow AlbedoBaseXL to have a min 1024x1024 min resoluition before requiring upfront kudos
+
+# 4.28.0
+
+* Adds support for batch processing
+* added dpmpp_sde to SECOND_ORDER_SAMPLERS
+
+
+# 4.27.2
+
+* Increased lora cost to 3 kudos per-lora
+
+# 4.27.1
+
+* Remove the `bridge_version` key from pop payloads. It is obsolete in favour of bridge-agent
+
+# 4.27.0
+
+* Allow sending semver in bridge-agent strings
+* Fix bug which caused most workers to get reduced rewards
+* LCM requesting a lot of steps just requires upfront kudos
+
+# 4.26.0
+
+* Support for multiple LoRa versions (only for worker reGen v3+)
+* Better handles more SDXL models based on baseline instead of name
+* Reports workers picking up requests
+* Reports LoRas on notifications
+
+# 4.25.0
+
+* Added service account role
+* service account can now report their proxied accounts.
+* Validates IP addresses added to the bans
+* Added min_p to LLM payloads
+
+# 4.24.0
+
+* Notifies mods on too many gens being censored as csam
+
+# 4.23.0
+
+* Flagged users with 0 kudos will now have have lower priority that anon
+* Replacement filter will always be applied to Flagged user prompts
+* Added user admin comments
+
+# 4.22.0
+
+Allows workers to send the `gen_metadata` key which can contain a list of dictionaries. 
+Each dictionary will be information to give to the user about that specific metadata
+Such as wether it's been censored and why, or whether any loras have been skipped.
+
+# 4.21.2
+
+Correctly calculate waiting requests with n>1
+
+# 4.21.1
+
+* Improved Kudos calculations for scribes per request and per uptime
+
+# 4.21.0
+
+* Added `stop_sequence` to scribe payloads. Allows up to 128 individual sequences.
+
+# 4.20.0
+
+* Allow Horde mods to see worker IP
+* Worker IP block now lasts a week by default
+* Worker IP block adjustable by days
+* Worker IP block now handles IPv6 defaulting to a /64 range (See https://www.mediawiki.org/wiki/Help:Range_blocks/IPv6)
+* IP Ban also blocks new registrations from that IP
+* Added manual IP ban endpoint. 
+* Added endpoint to get all IP blocks
+* Added endpoint to check if a specific IP is blocked
+
+# 4.19.0
+
+* Add option to block worker IP
+
+# 4.18.10
+
+* Fixed kudos calculations for untrusted LLMs
+* Synced dry-run kudos calculations for LLMs to their real calculations
+
 # 4.18.9
 
 * SDXL gens now costs double kudos
